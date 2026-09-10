@@ -114,3 +114,30 @@ cabal test
 ```
 
 The suite exercises the public command seam for backup, list, verify, and restore, plus the exported fold seam with a fixed worked example.
+
+## Coverage-Guided Fuzzing
+
+```sh
+cabal build exe:foldback
+cabal build exe:foldback --enable-coverage --builddir dist-cov
+cabal run foldback-cgpt -- [--generations N] [--seed N] [--replay SEED]
+```
+
+The `foldback-cgpt` executable (coverage-guided property testing) drives the
+real, HPC-instrumented `foldback` binary with seeded, stateful scenarios:
+generated filesystem trees, mutations between snapshots, symlinks, empty files
+and directories, 64 KiB chunk-boundary file sizes, and an optional unnamed
+snapshot. After every backup it checks receipt and `list` totals against the
+manifest, object-store deduplication and growth, `verify`, and a full
+round-trip restore of the snapshot just created; at the end of a scenario it
+also restores the earliest snapshot. Deliberate object corruption probes the
+corruption-detection paths, and a set of CLI negative checks covers argument
+and repository validation. Seeds that reach previously uncovered HPC ticks are
+kept and mutated for later generations.
+
+Failures are shrunk knob by knob and the minimal failure is replayed three
+times against the normal build in fresh directories; only failures stable
+across all three replays are reported. A reported seed reproduces exactly:
+`--replay SEED` re-runs that scenario alone. The campaign is deterministic
+given `--seed`, except that the name of a generated (unnamed) snapshot records
+the wall-clock time; the properties themselves are unaffected.
