@@ -2,7 +2,7 @@ cabal-version:      3.0
 name:               foldback
 version:            0.1.0.0
 synopsis:           A content-addressed filesystem backup CLI
-description:        A functional-pearl backup tool derived from filesystem folds.
+description:        An algebraic backup tool derived from filesystem folds.
 category:           System
 maintainer:         jonbaldie
 license:            BSD-3-Clause

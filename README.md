@@ -62,7 +62,7 @@ File ownership, permissions, extended attributes, ACLs, sparse extents, and modi
 
 An individual file is streamed once into a temporary object while its digest is calculated. The completed object and snapshot manifest are installed by rename, so an exception cannot expose a partially written object under a valid digest. Foldback does not lock the source; concurrent source changes can therefore produce a snapshot containing files from different instants.
 
-## The Functional Pearl
+## The Algebraic Derivation
 
 The derivation starts with the base functor for a filesystem tree:
 
