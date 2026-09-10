@@ -1,0 +1,62 @@
+cabal-version:      3.0
+name:               foldback
+version:            0.1.0.0
+synopsis:           A content-addressed filesystem backup CLI
+description:        A functional-pearl backup tool derived from filesystem folds.
+category:           System
+maintainer:         jonbaldie
+license:            BSD-3-Clause
+license-file:       LICENSE
+build-type:         Simple
+
+common warnings
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-uni-patterns -Wincomplete-record-updates
+  default-language: GHC2021
+  default-extensions: DeriveFunctor DerivingStrategies
+
+library
+  import: warnings
+  hs-source-dirs: src
+  autogen-modules: Paths_foldback
+  exposed-modules:
+      Foldback
+      Foldback.Algebra
+  other-modules:
+      Foldback.Repository
+      Paths_foldback
+  build-depends:
+      base >=4.18 && <5
+    , bytestring >=0.11 && <0.13
+    , containers >=0.6 && <0.8
+    , cryptohash-sha256 >=0.11 && <0.12
+    , directory >=1.3 && <1.4
+    , filepath >=1.4 && <1.6
+    , time >=1.12 && <1.15
+    , unix >=2.7 && <2.9
+
+executable foldback
+  import: warnings
+  hs-source-dirs: app
+  main-is: Main.hs
+  build-depends:
+      base >=4.18 && <5
+    , foldback
+
+test-suite foldback-test
+  import: warnings
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: Main.hs
+  build-tool-depends:
+      foldback:foldback
+  build-depends:
+      base >=4.18 && <5
+    , containers >=0.6 && <0.8
+    , directory >=1.3 && <1.4
+    , filepath >=1.4 && <1.6
+    , foldback
+    , process >=1.6 && <1.7
+
+source-repository head
+  type: git
+  location: https://github.com/jonbaldie/backup.git
