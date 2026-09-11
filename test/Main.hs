@@ -40,6 +40,7 @@ tests =
   , ("reject optionlike snapshot name", testRejectsOptionlikeSnapshotName)
   , ("reject symlink restore targets", testRejectsSymlinkRestoreTarget)
   , ("reject empty restore target", testRejectsEmptyRestoreTarget)
+  , ("reject empty repository path", testRejectsEmptyRepositoryPath)
   , ("tolerate foreign metadata files", testToleratesForeignMetadataFiles)
   , ("detect manifest tampering", testDetectsManifestTampering)
   , ("bounds streaming memory", testBoundsStreamingMemory)
@@ -258,6 +259,21 @@ testRejectsEmptyRestoreTarget = withTemporaryDirectory "foldback-empty-target-te
   assertEqual "a matching local file survives an refused empty target" "precious-local" surviving
   untouched <- readFile (workingDirectory </> "other.txt")
   assertEqual "unrelated local files survive" "unrelated-local" untouched
+
+testRejectsEmptyRepositoryPath :: IO ()
+testRejectsEmptyRepositoryPath = withTemporaryDirectory "foldback-empty-repository-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      workingDirectory = sandbox </> "work"
+  createDirectory source
+  createDirectory workingDirectory
+  writeFile (source </> "data.txt") "from-backup"
+
+  result <- bracket getCurrentDirectory setCurrentDirectory $ \_ -> do
+    setCurrentDirectory workingDirectory
+    runExecutable ["backup", source, "--repo", "", "--name", "s1"]
+  assertLeftContaining "backup rejects an empty repository path" "--repo cannot be empty" result
+  contents <- listDirectory workingDirectory
+  assertEqual "an empty repository path does not modify the working directory" (0 :: Int) (length contents)
 
 testToleratesForeignMetadataFiles :: IO ()
 testToleratesForeignMetadataFiles = withTemporaryDirectory "foldback-foreign-metadata-test" $ \sandbox -> do
