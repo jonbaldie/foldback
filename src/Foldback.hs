@@ -79,8 +79,7 @@ parseCommand ("backup" : arguments) = do
   repo <- requireRepository repository
   pure (Backup repo source requestedName)
 parseCommand ("restore" : arguments) = do
-  (positionals, repository, requestedName) <- parseArguments False arguments
-  rejectName requestedName
+  (positionals, repository, _) <- parseArguments False arguments
   case positionals of
     [snapshot, target] -> Restore <$> requireRepository repository <*> pure snapshot <*> pure target
     _ -> Left "restore requires SNAPSHOT and TARGET"
@@ -94,8 +93,7 @@ parseCommand _ = Left usage
 
 parseRepositoryCommand :: (FilePath -> Command) -> [String] -> Either String Command
 parseRepositoryCommand constructor arguments = do
-  (positionals, repository, requestedName) <- parseArguments False arguments
-  rejectName requestedName
+  (positionals, repository, _) <- parseArguments False arguments
   unlessEmpty positionals
   constructor <$> requireRepository repository
 
@@ -112,6 +110,8 @@ parseArguments allowName = go [] Nothing Nothing
   go positionals Nothing requestedName ("--repo" : value : rest) =
     go positionals (Just value) requestedName rest
   go _ (Just _) _ ("--repo" : _ : _) = Left "--repo may only be supplied once"
+  go _ _ _ ("--name" : _)
+    | not allowName = Left "--name is only valid for backup"
   go positionals repository Nothing ("--name" : value : rest)
     | allowName = go positionals repository (Just value) rest
   go _ _ (Just _) ("--name" : _ : _)
@@ -132,10 +132,6 @@ requireRepository Nothing = Left "--repo is required"
 requireRepository (Just repository)
   | null repository = Left "--repo cannot be empty"
   | otherwise = Right repository
-
-rejectName :: Maybe String -> Either String ()
-rejectName Nothing = Right ()
-rejectName (Just _) = Left "--name is only valid for backup"
 
 usage :: String
 usage = unlines

@@ -51,6 +51,7 @@ tests =
   , ("reject symlink restore targets", testRejectsSymlinkRestoreTarget)
   , ("reject empty restore target", testRejectsEmptyRestoreTarget)
   , ("reject empty repository path", testRejectsEmptyRepositoryPath)
+  , ("reject --name outside backup", testRejectsNameOutsideBackup)
   , ("tolerate foreign metadata files", testToleratesForeignMetadataFiles)
   , ("detect manifest tampering", testDetectsManifestTampering)
   , ("bounds streaming memory", testBoundsStreamingMemory)
@@ -359,6 +360,33 @@ testRejectsEmptyRepositoryPath = withTemporaryDirectory "foldback-empty-reposito
   assertLeftContaining "backup rejects an empty repository path" "--repo cannot be empty" result
   contents <- listDirectory workingDirectory
   assertEqual "an empty repository path does not modify the working directory" (0 :: Int) (length contents)
+
+testRejectsNameOutsideBackup :: IO ()
+testRejectsNameOutsideBackup = withTemporaryDirectory "foldback-name-outside-backup-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+  createDirectory source
+  writeFile (source </> "a.txt") "data"
+
+  let rejectedArguments =
+        [ ["restore", "snapshot", sandbox </> "restored", "--repo", repository, "--name", "first"]
+        , ["restore", "snapshot", sandbox </> "restored", "--repo", repository, "--name"]
+        , ["list", "--repo", repository, "--name", "first"]
+        , ["list", "--repo", repository, "--name"]
+        , ["verify", "--repo", repository, "--name", "first"]
+        , ["verify", "--repo", repository, "--name"]
+        ]
+  results <- traverse runExecutable rejectedArguments
+  forM_ results (assertLeftContaining "--name is refused outside backup" "--name is only valid for backup")
+
+  namedResult <- runExecutable ["backup", source, "--repo", repository, "--name", "first"]
+  assertEqual "backup still accepts a named snapshot" (Right "snapshot first: 1 file, 4 bytes\n") namedResult
+
+  unnamedResult <- runExecutable ["backup", source, "--repo", repository, "--name"]
+  assertLeftContaining "backup still reports a missing name value" "--name requires a value" unnamedResult
+
+  duplicateResult <- runExecutable ["backup", source, "--repo", repository, "--name", "second", "--name", "third"]
+  assertLeftContaining "backup still reports a repeated name flag" "--name may only be supplied once" duplicateResult
 
 testToleratesForeignMetadataFiles :: IO ()
 testToleratesForeignMetadataFiles = withTemporaryDirectory "foldback-foreign-metadata-test" $ \sandbox -> do
