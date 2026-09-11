@@ -38,6 +38,7 @@ import System.Directory
   )
 import System.FilePath
   ( addTrailingPathSeparator
+  , dropTrailingPathSeparator
   , isAbsolute
   , normalise
   , splitDirectories
@@ -86,7 +87,11 @@ data Snapshot = Snapshot
   deriving stock (Eq, Read, Show)
 
 backup :: FilePath -> Maybe String -> FilePath -> IO BackupReceipt
-backup repository requestedName source = do
+backup repository requestedName unnormalisedSource = do
+  -- A trailing separator resolves the final path component, so lstat would
+  -- report the link's target and the symlink check below would pass. Drop it
+  -- before inspecting the path; real directories with a slash are unaffected.
+  let source = dropTrailingPathSeparator unnormalisedSource
   sourceExists <- doesDirectoryExist source
   unless sourceExists (ioError (userError ("source is not a directory: " <> source)))
   sourceStatus <- Posix.getSymbolicLinkStatus source

@@ -153,6 +153,12 @@ testRejectsSymlinkSourceRoot = withTemporaryDirectory "foldback-symlink-root-tes
   backupResult <- runExecutable ["backup", sourceLink, "--repo", repository, "--name", "invalid"]
   assertLeftContaining "backup requires a real directory root" "source is not a directory:" backupResult
 
+  backupSlashedResult <- runExecutable ["backup", sourceLink <> "/", "--repo", repository, "--name", "invalid"]
+  assertLeftContaining
+    "backup requires a real directory root, slash-suffixed"
+    "source is not a directory:"
+    backupSlashedResult
+
 testRejectsOptionlikeSnapshotName :: IO ()
 testRejectsOptionlikeSnapshotName = withTemporaryDirectory "foldback-optionlike-name-test" $ \sandbox -> do
   let source = sandbox </> "source"
