@@ -6,7 +6,7 @@ Agent guidance for working on the Foldback content-addressed backup CLI.
 
 ### Issue tracker
 
-Issues live as local markdown files under `.scratch/<feature-slug>/`. See `docs/agents/issue-tracker.md`.
+Issues and specs for this repo live as GitHub issues. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
