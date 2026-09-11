@@ -2,7 +2,7 @@ module Main (main) where
 
 import Control.Exception (SomeException, bracket, displayException, try)
 import Foldback.Algebra
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, isPrefixOf)
 import qualified Data.Set as Set
 import System.Directory
   ( createDirectory
@@ -39,6 +39,7 @@ tests =
   , ("reject symlink restore targets", testRejectsSymlinkRestoreTarget)
   , ("reject empty restore target", testRejectsEmptyRestoreTarget)
   , ("tolerate foreign metadata files", testToleratesForeignMetadataFiles)
+  , ("detect manifest tampering", testDetectsManifestTampering)
   , ("help", testHelp)
   ]
 
@@ -259,6 +260,41 @@ testToleratesForeignMetadataFiles = withTemporaryDirectory "foldback-foreign-met
 
   restoreResult <- runExecutable ["restore", "s1", sandbox </> "restored", "--repo", repository]
   assertRightContaining "restore of a real snapshot is unaffected" "restored s1" restoreResult
+
+testDetectsManifestTampering :: IO ()
+testDetectsManifestTampering = withTemporaryDirectory "foldback-manifest-tamper-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+  createDirectory source
+  writeFile (source </> "a.txt") "precious data"
+  _ <- runExecutable ["backup", source, "--repo", repository, "--name", "s"]
+
+  rewriteManifestEntryName repository "s" "a.txt" "z.txt"
+
+  verifyResult <- runExecutable ["verify", "--repo", repository]
+  assertLeftContaining "verify identifies a damaged manifest" "corrupt snapshot" verifyResult
+
+  restoreResult <- runExecutable ["restore", "s", sandbox </> "restored", "--repo", repository]
+  assertLeftContaining "restore refuses a damaged manifest" "corrupt snapshot" restoreResult
+
+-- Rewrites a manifest entry's path in place while keeping the record
+-- well-formed, simulating on-disk damage the record layer alone cannot see.
+rewriteManifestEntryName :: FilePath -> String -> String -> String -> IO ()
+rewriteManifestEntryName repository name from to = do
+  let manifestPath = repository </> "snapshots" </> name
+  content <- readFile manifestPath
+  damaged <- case breakOnFirst ('"' : from ++ "\"") content of
+    Nothing -> error ("test fixture could not find " <> show from <> " in the manifest")
+    Just (before, after) -> pure (before <> ('"' : to ++ "\"" <> after))
+  length damaged `seq` writeFile manifestPath damaged
+
+breakOnFirst :: String -> String -> Maybe (String, String)
+breakOnFirst needle = go ""
+ where
+  go _ [] = Nothing
+  go acc rest@(character : characters)
+    | needle `isPrefixOf` rest = Just (reverse acc, drop (length needle) rest)
+    | otherwise = go (character : acc) characters
 
 testHelp :: IO ()
 testHelp = do
