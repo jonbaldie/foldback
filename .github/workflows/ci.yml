@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, GHC ${{ matrix.ghc }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        ghc: ["9.6.6", "9.12.1"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Haskell
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: ${{ matrix.ghc }}
+          cabal-version: "latest"
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cabal/store
+            ~/.cabal/packages
+          key: ${{ matrix.os }}-ghc-${{ matrix.ghc }}-cabal-${{ hashFiles('**/*.cabal', '**/cabal.project') }}
+          restore-keys: |
+            ${{ matrix.os }}-ghc-${{ matrix.ghc }}-cabal-
+
+      - name: Check package
+        run: cabal check
+
+      - name: Update Cabal package list
+        run: cabal update
+
+      - name: Build
+        run: cabal build all --enable-tests
+
+      - name: Run Tests
+        run: cabal test all --test-show-details=always
