@@ -10,11 +10,13 @@ import System.Directory
   , createDirectoryIfMissing
   , createFileLink
   , doesPathExist
+  , getCurrentDirectory
   , getSymbolicLinkTarget
   , getTemporaryDirectory
   , listDirectory
   , removeFile
   , removePathForcibly
+  , setCurrentDirectory
   )
 import System.Exit (ExitCode (..), exitFailure)
 import System.FilePath ((</>))
@@ -35,6 +37,7 @@ tests =
   , ("reject symlink source roots", testRejectsSymlinkSourceRoot)
   , ("reject optionlike snapshot name", testRejectsOptionlikeSnapshotName)
   , ("reject symlink restore targets", testRejectsSymlinkRestoreTarget)
+  , ("reject empty restore target", testRejectsEmptyRestoreTarget)
   , ("help", testHelp)
   ]
 
@@ -202,6 +205,34 @@ testRejectsSymlinkRestoreTarget = withTemporaryDirectory "foldback-symlink-targe
     linkedResult
   contents <- listDirectory (sandbox </> "empty-target-directory")
   assertEqual "nothing was written through the refused symlink target" (0 :: Int) (length contents)
+
+testRejectsEmptyRestoreTarget :: IO ()
+testRejectsEmptyRestoreTarget = withTemporaryDirectory "foldback-empty-target-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+      workingDirectory = sandbox </> "work"
+  createDirectory source
+  createDirectory workingDirectory
+  writeFile (source </> "data.txt") "from-backup"
+  writeFile (workingDirectory </> "data.txt") "precious-local"
+  writeFile (workingDirectory </> "other.txt") "unrelated-local"
+  _ <- runExecutable ["backup", source, "--repo", repository, "--name", "s1"]
+
+  previousDirectory <- getCurrentDirectory
+  setCurrentDirectory workingDirectory
+  emptyResult <- try (runExecutable ["restore", "s1", "", "--repo", repository])
+  setCurrentDirectory previousDirectory
+  case emptyResult of
+    Right (Right output) -> error ("restore accepted an empty target: " <> show output)
+    Right (Left message)
+      | "restore target" `isInfixOf` message -> pure ()
+      | otherwise -> error ("restore failed with an unexpected message: " <> message)
+    Left exception -> error ("restore failed unexpectedly: " <> show (exception :: SomeException))
+
+  surviving <- readFile (workingDirectory </> "data.txt")
+  assertEqual "a matching local file survives an refused empty target" "precious-local" surviving
+  untouched <- readFile (workingDirectory </> "other.txt")
+  assertEqual "unrelated local files survive" "unrelated-local" untouched
 
 testHelp :: IO ()
 testHelp = do

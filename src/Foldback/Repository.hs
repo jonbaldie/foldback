@@ -389,6 +389,10 @@ isPathPrefixOf parent child = addTrailingPathSeparator parent `isPrefixOf` child
 
 prepareTarget :: FilePath -> IO ()
 prepareTarget target = do
+  -- An empty target passes every following check vacuously and makes each
+  -- restored entry resolve against the working directory, silently
+  -- overwriting matching files there.
+  when (null target) (ioError (userError "restore target cannot be empty"))
   -- Inspect the node itself, not what a symlink would resolve to: a dangling
   -- symlink fails a following stat, and a link to a directory is not a
   -- directory this command may write through.
