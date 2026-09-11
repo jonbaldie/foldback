@@ -137,7 +137,7 @@ restore repository name target = do
 listSnapshots :: FilePath -> IO [SnapshotInfo]
 listSnapshots repository = do
   ensureRepository repository
-  names <- sort <$> listDirectory (repository </> "snapshots")
+  names <- sort . filter (not . isForeignArtifact) <$> listDirectory (repository </> "snapshots")
   mapM loadInfo names
  where
   loadInfo name = do
@@ -154,7 +154,8 @@ listSnapshots repository = do
 verifyRepository :: FilePath -> IO Verification
 verifyRepository repository = do
   snapshots <- loadSnapshots
-  objectNames <- sort <$> listDirectory (repository </> "objects")
+  objectNames <-
+    sort . filter (not . isForeignArtifact) <$> listDirectory (repository </> "objects")
   mapM_ verifyObjectName objectNames
   let expectedSizeSets = foldMap referencedObjects snapshots
   expectedObjects <- mapM uniqueExpectedSize (Map.toList expectedSizeSets)
@@ -230,7 +231,14 @@ validateSnapshotName name =
 validateCreatedSnapshotName :: String -> IO ()
 validateCreatedSnapshotName name = do
   validateSnapshotName name
-  when (take 1 name == "-") (ioError (userError "snapshot names may not begin with '-'"))
+  when
+    (take 1 name `elem` ["-", "."])
+    (ioError (userError "snapshot names may not begin with '-' or '.'"))
+
+-- Dotfiles and staging leftovers (".snapshot-", ".incoming-") in the live
+-- directories are not repository artifacts; directory scans ignore them.
+isForeignArtifact :: String -> Bool
+isForeignArtifact name = take 1 name == "."
 
 scanTree :: FilePath -> FilePath -> FilePath -> IO (Fix FsF)
 scanTree repository source relative = do

@@ -38,6 +38,7 @@ tests =
   , ("reject optionlike snapshot name", testRejectsOptionlikeSnapshotName)
   , ("reject symlink restore targets", testRejectsSymlinkRestoreTarget)
   , ("reject empty restore target", testRejectsEmptyRestoreTarget)
+  , ("tolerate foreign metadata files", testToleratesForeignMetadataFiles)
   , ("help", testHelp)
   ]
 
@@ -233,6 +234,31 @@ testRejectsEmptyRestoreTarget = withTemporaryDirectory "foldback-empty-target-te
   assertEqual "a matching local file survives an refused empty target" "precious-local" surviving
   untouched <- readFile (workingDirectory </> "other.txt")
   assertEqual "unrelated local files survive" "unrelated-local" untouched
+
+testToleratesForeignMetadataFiles :: IO ()
+testToleratesForeignMetadataFiles = withTemporaryDirectory "foldback-foreign-metadata-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+  createDirectory source
+  writeFile (source </> "a.txt") "important data"
+  _ <- runExecutable ["backup", source, "--repo", repository, "--name", "s1"]
+
+  writeFile (repository </> "snapshots" </> ".DS_Store") "\0\0\0\1Bud1\0\0\16\0"
+  writeFile (repository </> "objects" </> ".DS_Store") "\0\0\0\1Bud1\0\0\16\0"
+  writeFile (repository </> "snapshots" </> ".snapshot-leftover") "abandoned staging file"
+  writeFile (repository </> "objects" </> ".incoming-abandoned") "abandoned staging file"
+
+  listResult <- runExecutable ["list", "--repo", repository]
+  assertEqual "list ignores foreign files in snapshots" (Right "s1\t1 files\t14 bytes\n") listResult
+
+  verifyResult <- runExecutable ["verify", "--repo", repository]
+  assertEqual "verify counts only real artifacts" (Right "verified 1 snapshots, 1 objects\n") verifyResult
+
+  dotNamedBackup <- runExecutable ["backup", source, "--repo", repository, "--name", ".hidden"]
+  assertLeftContaining "backup refuses a leading-dot snapshot name" "snapshot name" dotNamedBackup
+
+  restoreResult <- runExecutable ["restore", "s1", sandbox </> "restored", "--repo", repository]
+  assertRightContaining "restore of a real snapshot is unaffected" "restored s1" restoreResult
 
 testHelp :: IO ()
 testHelp = do
