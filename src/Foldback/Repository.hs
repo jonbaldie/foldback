@@ -8,6 +8,7 @@ module Foldback.Repository
   , manifestDigestPath
   , restore
   , snapshotDigest
+  , validatePaths
   , verifyRepository
   , writeManifestDigest
   , writeSnapshot
@@ -443,17 +444,15 @@ validDigest digest =
     && all (\character -> isDigit character || (isHexDigit character && isLower character)) digest
 
 validatePaths :: [ManifestEntry] -> IO ()
-validatePaths manifestEntries = void (foldM validate (Set.empty, []) manifestEntries)
+validatePaths manifestEntries = void (foldM validate Set.empty manifestEntries)
  where
-  validate (seen, symlinks) entry = do
+  symlinks = [path | SymbolicLink path _ <- manifestEntries]
+  validate seen entry = do
     let path = entryPath entry
     unless (safeRelativePath path) (ioError (userError ("unsafe snapshot path: " <> path)))
     when (Set.member path seen) (ioError (userError ("duplicate snapshot path: " <> path)))
     when (any (`isPathPrefixOf` path) symlinks) (ioError (userError ("path descends through a symlink: " <> path)))
-    let nextSymlinks = case entry of
-          SymbolicLink {} -> path : symlinks
-          _ -> symlinks
-    pure (Set.insert path seen, nextSymlinks)
+    pure (Set.insert path seen)
 
 entryPath :: ManifestEntry -> FilePath
 entryPath (Directory path) = path
