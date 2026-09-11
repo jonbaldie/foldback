@@ -107,6 +107,8 @@ parseArguments :: Bool -> [String] -> Either String ([String], Maybe FilePath, M
 parseArguments allowName = go [] Nothing Nothing
  where
   go positionals repository requestedName [] = Right (reverse positionals, repository, requestedName)
+  go _ Nothing _ ("--repo" : value : _)
+    | take 1 value == "-" = Left "--repo requires a value"
   go positionals Nothing requestedName ("--repo" : value : rest) =
     go positionals (Just value) requestedName rest
   go _ (Just _) _ ("--repo" : _ : _) = Left "--repo may only be supplied once"
