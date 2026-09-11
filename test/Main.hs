@@ -38,6 +38,7 @@ tests =
   , ("detect corruption", testDetectsCorruption)
   , ("reject symlink source roots", testRejectsSymlinkSourceRoot)
   , ("reject optionlike snapshot name", testRejectsOptionlikeSnapshotName)
+  , ("reject optionlike repository value", testRejectsOptionlikeRepositoryValue)
   , ("reject symlink restore targets", testRejectsSymlinkRestoreTarget)
   , ("reject empty restore target", testRejectsEmptyRestoreTarget)
   , ("reject empty repository path", testRejectsEmptyRepositoryPath)
@@ -191,6 +192,27 @@ testRejectsOptionlikeSnapshotName = withTemporaryDirectory "foldback-optionlike-
   assertEqual "dash inside the name is still accepted" (Right "snapshot my-backup: 1 file, 4 bytes\n") dashInside
   restoreResult <- runExecutable ["restore", "my-backup", sandbox </> "restored", "--repo", repository]
   assertRightContaining "dash-inside names restore cleanly" "restored my-backup" restoreResult
+
+testRejectsOptionlikeRepositoryValue :: IO ()
+testRejectsOptionlikeRepositoryValue = withTemporaryDirectory "foldback-optionlike-repo-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      workingDirectory = sandbox </> "work"
+      repository = sandbox </> "repository"
+      invalidArguments =
+        [ ["backup", source, "--repo", "--name"]
+        , ["backup", source, "--repo", "--name", "my-snap"]
+        , ["backup", source, "--repo", "--repo", repository]
+        ]
+  createDirectory source
+  createDirectory workingDirectory
+  writeFile (source </> "a.txt") "data"
+
+  results <- bracket getCurrentDirectory setCurrentDirectory $ \_ -> do
+    setCurrentDirectory workingDirectory
+    traverse runExecutable invalidArguments
+  forM_ results (assertLeftContaining "--repo rejects an option-like value" "--repo requires a value")
+  contents <- listDirectory workingDirectory
+  assertEqual "an option-like repository value does not create a flag-named directory" (0 :: Int) (length contents)
 
 testRejectsSymlinkRestoreTarget :: IO ()
 testRejectsSymlinkRestoreTarget = withTemporaryDirectory "foldback-symlink-target-test" $ \sandbox -> do
