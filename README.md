@@ -1,19 +1,24 @@
 # Foldback
 
-Foldback is an immutable, content-addressed filesystem backup CLI written in Haskell. It turns a directory tree into a snapshot manifest by a catamorphism, stores each distinct file body once under its SHA-256 digest, and restores snapshots without following source symlinks.
+Foldback is an immutable, content-addressed filesystem backup tool. It takes snapshots of directory trees, deduplicates identical files across all snapshots using SHA-256 content addressing, and safely restores snapshots without following symlinks.
 
-The repository is deliberately inspectable:
+## What Foldback Does For You
 
-```text
-repository/
-|-- FORMAT
-|-- objects/
-|   `-- <sha256>
-`-- snapshots/
-    `-- <name>
-```
+- **Automatic Deduplication**: Every distinct file body is stored only once under its SHA-256 digest. Identical files across different directories, or unchanged files across multiple backups, consume no extra disk space.
+- **Inspectable Repository**: The repository on disk is transparent and straightforward, not a black-box database:
+  ```text
+  repository/
+  |-- FORMAT
+  |-- objects/
+  |   `-- <sha256>
+  `-- snapshots/
+      `-- <name>
+  ```
+- **Integrity Verification**: `foldback verify` checks that all snapshot manifests are consistent, every referenced object exists, and every stored content object matches its SHA-256 digest without corruption.
+- **Safe Restoration**: Restores snapshots cleanly into empty or new directories, refusing to overwrite non-empty targets or traverse symlinks.
+- **Atomic Operations**: Files and manifests are staged in temporary files and installed by rename, ensuring an interruption or crash never exposes a partially written object under a valid digest.
 
-## Build
+## Install and Build
 
 Foldback requires GHC 9.6 or newer and Cabal.
 
@@ -22,49 +27,89 @@ cabal build
 cabal install exe:foldback
 ```
 
-The Cabal package builds a native `foldback` executable.
+This builds and installs the standalone `foldback` executable.
 
-## Use
+## Usage
 
-Create a named snapshot. The repository is initialized on the first backup and must be outside the source tree.
+### 1. Create a snapshot
+
+Backup a source directory into an external repository. If the repository does not exist, it will be initialized automatically:
 
 ```sh
 foldback backup ~/Documents --repo /Volumes/Archive/documents --name before-upgrade
 ```
 
-Omit `--name` to generate a timestamp-based name.
+Omit `--name` to automatically generate a timestamp-based snapshot name:
 
-List snapshots:
+```sh
+foldback backup ~/Documents --repo /Volumes/Archive/documents
+```
+
+### 2. List snapshots
+
+View all committed snapshots with their file counts and total byte sizes:
 
 ```sh
 foldback list --repo /Volumes/Archive/documents
 ```
 
-Verify every manifest and content object:
+### 3. Verify repository integrity
+
+Verify every snapshot manifest and audit every content object against its cryptographic digest:
 
 ```sh
 foldback verify --repo /Volumes/Archive/documents
 ```
 
-Restore into a new or empty directory:
+### 4. Restore a snapshot
+
+Restore a snapshot into a new or empty target directory:
 
 ```sh
 foldback restore before-upgrade ./recovered --repo /Volumes/Archive/documents
 ```
 
-Run `foldback --help` for the command summary.
+Run `foldback --help` for the full command summary.
 
 ## Filesystem Semantics
 
-Version 0.1 snapshots regular-file contents, directory structure, empty directories, and symbolic-link targets. Symlinks are recorded rather than followed. Hard-linked files are restored as separate files whose content remains deduplicated in the repository.
+- **Files and directories**: Snapshots regular file contents, directory hierarchy, and empty directories.
+- **Symlinks**: Symbolic links are recorded verbatim as links, rather than followed.
+- **Hard links**: Hard-linked files are recorded and restored as separate directory entries whose file content remains deduplicated in the object store.
+- **Safety checks**: Special files (sockets, devices, FIFOs) cause backup to halt with an error. Restore refuses non-empty targets and paths that overlap with the repository itself. Reusing an existing snapshot name is also refused.
+- **Concurrency**: Foldback does not lock the source tree; files modified during backup may reflect different moments in time.
 
-File ownership, permissions, extended attributes, ACLs, sparse extents, and modification times are not yet recorded. Special files such as sockets, devices, and FIFOs cause backup to stop with an error. Restore refuses non-empty targets and paths overlapping the repository. Reusing a snapshot name is also refused.
+## Testing
 
-An individual file is streamed once into a temporary object while its digest is calculated. The completed object and snapshot manifest are installed by rename, so an exception cannot expose a partially written object under a valid digest. Foldback does not lock the source; concurrent source changes can therefore produce a snapshot containing files from different instants.
+Run the integration and regression test suite:
 
-## The Algebraic Derivation
+```sh
+cabal test
+```
 
-The derivation starts with the base functor for a filesystem tree:
+The test suite exercises the public command interface (`backup`, `list`, `verify`, `restore`), negative argument validation, corruption detection, and the core algebraic fold seam.
+
+### Coverage-Guided Property Testing (CGPT)
+
+```sh
+cabal build exe:foldback
+cabal build exe:foldback --enable-coverage --builddir dist-cov
+cabal run foldback-cgpt -- [--generations N] [--seed N] [--replay SEED]
+```
+
+The `foldback-cgpt` executable drives the real, HPC-instrumented `foldback` binary with seeded, stateful scenarios: generated filesystem trees, mutations between snapshots, symlinks, empty files and directories, 64 KiB chunk boundaries, and negative checks. After every backup step it asserts receipts, list summaries, deduplication invariants, repository verification, and round-trip restore fidelity.
+
+---
+
+## Interested in the roots of this project?
+
+Well, it's actually rooted in a pretty cool application of algebraic coding theory and functional programming.
+
+At its core, Foldback treats filesystem trees and backup operations through the lens of initial algebra semantics and the Bird-Meertens formalism.
+
+### The Algebraic Derivation
+
+The derivation starts with a polynomial base functor `FsF` for an unfixed filesystem tree:
 
 ```haskell
 data FsF a
@@ -75,13 +120,13 @@ data FsF a
 newtype Fix f = Fix (f (Fix f))
 ```
 
-For any functor `f`, Bird-Meertens notation gives the unique homomorphism from its initial algebra:
+For any functor `f`, category theory gives the unique homomorphism (a *catamorphism*, or fold) from its initial algebra:
 
 ```text
 cata phi . Fix = phi . fmap (cata phi)
 ```
 
-Choose `phi` to prepend one node's manifest entry and combine the summaries of its children:
+We choose an algebra `phi` that prepends one node's manifest entry and combines the summaries of its children:
 
 ```text
 phi (DirectoryF p xs)      = directory(p) <> fold(xs)
@@ -89,55 +134,29 @@ phi (RegularFileF p h n)   = file(p, h, n)
 phi (SymbolicLinkF p dest) = link(p, dest)
 ```
 
-Here `<>` is the product monoid of pre-order entries, file count, total byte count, and the set of content digests. Associativity means subtrees can be summarized independently; the empty directory supplies the identity. The implementation in `Foldback.Algebra` is the equation directly transcribed into Haskell.
+Here `<>` is the product monoid of pre-order entry lists, total file count, total byte count, and the set of content digests. Associativity means arbitrary subtrees can be summarized independently; the empty directory supplies the monoidal identity. The implementation in `Foldback.Algebra` is this exact equation directly transcribed into Haskell.
 
-The operational program is then factored as:
+The operational backup pipeline factors cleanly as:
 
 ```text
 backup = commit . cata phi <=< scan-and-store
 ```
 
-`scan-and-store` is the effectful coalgebra-like edge: it observes directory shape and streams regular files into the object store. `cata phi` is the pure center: it forgets recursion while deriving the complete manifest and totals. `commit` is the other effectful edge: it atomically publishes that value as a snapshot. This factorization keeps filesystem effects at the perimeter and makes the derivation independently testable with a worked tree.
+- **`scan-and-store`** is the effectful coalgebraic edge: it traverses physical directory structure and streams regular files into content-addressed object storage.
+- **`cata phi`** is the pure mathematical center: it eliminates recursion while deriving the complete manifest and accounting totals in one pass.
+- **`commit`** is the effectful closing edge: it atomically writes and installs the resulting snapshot manifest.
 
-Content addressing follows from the same homomorphism. The object contribution of a file is the singleton set containing its digest; the directory contribution is set union over its children. By idempotence of set union, equal file bodies collapse without a separate deduplication pass:
+### Content Addressing as a Homomorphism
+
+Content addressing emerges directly from the same homomorphism. The object contribution of a file is the singleton set containing its digest; the directory contribution is set union over its children. By idempotence of set union (`A ∪ A = A`), identical file bodies collapse without requiring a distinct deduplication pass:
 
 ```text
 objects (join subtrees) = union (map objects subtrees)
 ```
 
-That is the practical payoff of the Bird-Meertens view: snapshot shape is a list homomorphism, storage demand is a set homomorphism, and accounting is a numeric homomorphism, all derived by one fold over the same recursive value.
+That is the practical payoff of the algebraic view:
+- Snapshot structure is a **list homomorphism**.
+- Storage demand is a **set homomorphism**.
+- File and byte accounting is a **numeric homomorphism**.
 
-## Test
-
-```sh
-cabal test
-```
-
-The suite exercises the public command seam for backup, list, verify, and restore, plus the exported fold seam with a fixed worked example.
-
-## Coverage-Guided Fuzzing
-
-```sh
-cabal build exe:foldback
-cabal build exe:foldback --enable-coverage --builddir dist-cov
-cabal run foldback-cgpt -- [--generations N] [--seed N] [--replay SEED]
-```
-
-The `foldback-cgpt` executable (coverage-guided property testing) drives the
-real, HPC-instrumented `foldback` binary with seeded, stateful scenarios:
-generated filesystem trees, mutations between snapshots, symlinks, empty files
-and directories, 64 KiB chunk-boundary file sizes, and an optional unnamed
-snapshot. After every backup it checks receipt and `list` totals against the
-manifest, object-store deduplication and growth, `verify`, and a full
-round-trip restore of the snapshot just created; at the end of a scenario it
-also restores the earliest snapshot. Deliberate object corruption probes the
-corruption-detection paths, and a set of CLI negative checks covers argument
-and repository validation. Seeds that reach previously uncovered HPC ticks are
-kept and mutated for later generations.
-
-Failures are shrunk knob by knob and the minimal failure is replayed three
-times against the normal build in fresh directories; only failures stable
-across all three replays are reported. A reported seed reproduces exactly:
-`--replay SEED` re-runs that scenario alone. The campaign is deterministic
-given `--seed`, except that the name of a generated (unnamed) snapshot records
-the wall-clock time; the properties themselves are unaffected.
+All three properties are computed simultaneously by a single fold over the same recursive value.
