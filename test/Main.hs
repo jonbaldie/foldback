@@ -9,7 +9,14 @@ import Data.List (isInfixOf, isPrefixOf)
 import qualified Data.ByteString as BS
 import qualified Data.Set as Set
 import Foldback.Algebra
-import Foldback.Repository (manifestDigestPath, writeManifestDigest)
+import Foldback.Repository
+  ( Snapshot (..)
+  , manifestDigestPath
+  , snapshotDigest
+  , validatePaths
+  , writeManifestDigest
+  , writeSnapshot
+  )
 import Numeric (showHex)
 import qualified System.Posix.Files as Posix
 import System.Directory
@@ -58,6 +65,7 @@ tests =
   , ("sidecar installed before manifest", testSidecarInstalledBeforeManifest)
   , ("tolerate incomplete snapshot leftovers", testIncompleteSnapshotTolerated)
   , ("atomic digest sidecar staging", testDigestSidecarAtomicStaging)
+  , ("reject symlink traversal order independent", testRejectsSymlinkTraversalOrderIndependent)
   , ("help", testHelp)
   ]
 
@@ -587,6 +595,95 @@ testDigestSidecarAtomicStaging = withTemporaryDirectory "foldback-staging-test" 
 
   entriesAfterUpdate <- listDirectory snapshotsDir
   assertEqual "no staging temp files remain after atomic update" ([] :: [String]) (filter (\name -> ".digest-" `isPrefixOf` name) entriesAfterUpdate)
+
+testRejectsSymlinkTraversalOrderIndependent :: IO ()
+testRejectsSymlinkTraversalOrderIndependent = do
+  let dummyDigest = Digest (replicate 64 'a')
+      linkEntry = SymbolicLink "link" "target"
+      childFile = RegularFile "link/child" dummyDigest 10
+      childDir = Directory "link/sub"
+      siblingFile = RegularFile "link_sibling" dummyDigest 10
+      siblingDir = Directory "link_other"
+
+  -- 1. Sibling paths with symlinks must pass validation regardless of order
+  validatePaths [linkEntry, siblingFile, siblingDir]
+  validatePaths [siblingFile, linkEntry, siblingDir]
+  validatePaths [siblingFile, siblingDir, linkEntry]
+
+  -- 2. Child after symlink must fail with "path descends through a symlink: <path>"
+  resultAfterFile <- try (validatePaths [linkEntry, childFile])
+  case resultAfterFile of
+    Left (e :: SomeException) ->
+      assertBool "child file after symlink error message" ("path descends through a symlink: link/child" `isInfixOf` displayException e)
+    Right () ->
+      error "expected validation failure when child file is after symlink, but it passed"
+
+  -- 3. Child before symlink must fail with "path descends through a symlink: <path>"
+  resultBeforeFile <- try (validatePaths [childFile, linkEntry])
+  case resultBeforeFile of
+    Left (e :: SomeException) ->
+      assertBool "child file before symlink error message" ("path descends through a symlink: link/child" `isInfixOf` displayException e)
+    Right () ->
+      error "expected validation failure when child file is before symlink, but it passed"
+
+  -- 4. Child directory before symlink must fail with "path descends through a symlink: <path>"
+  resultBeforeDir <- try (validatePaths [childDir, linkEntry])
+  case resultBeforeDir of
+    Left (e :: SomeException) ->
+      assertBool "child dir before symlink error message" ("path descends through a symlink: link/sub" `isInfixOf` displayException e)
+    Right () ->
+      error "expected validation failure when child dir is before symlink, but it passed"
+
+  -- 5. Symlink descending through another symlink must fail regardless of order
+  let nestedLink = SymbolicLink "link/nested" "target2"
+  resultNestedAfter <- try (validatePaths [linkEntry, nestedLink])
+  case resultNestedAfter of
+    Left (e :: SomeException) ->
+      assertBool "nested symlink after error message" ("path descends through a symlink: link/nested" `isInfixOf` displayException e)
+    Right () ->
+      error "expected validation failure when nested symlink is after symlink, but it passed"
+
+  resultNestedBefore <- try (validatePaths [nestedLink, linkEntry])
+  case resultNestedBefore of
+    Left (e :: SomeException) ->
+      assertBool "nested symlink before error message" ("path descends through a symlink: link/nested" `isInfixOf` displayException e)
+    Right () ->
+      error "expected validation failure when nested symlink is before symlink, but it passed"
+
+  -- 6. End-to-end repository restore and verify reject out-of-order manifest entries upfront
+  withTemporaryDirectory "foldback-order-independent-test" $ \sandbox -> do
+    let source = sandbox </> "source"
+        repository = sandbox </> "repository"
+        restored = sandbox </> "restored"
+    createDirectory source
+    writeFile (source </> "dummy.txt") "content"
+    _ <- runExecutable ["backup", source, "--repo", repository, "--name", "base"]
+
+    let badSnapshot =
+          Snapshot
+            { snapshotFormat = 1
+            , snapshotName = "bad"
+            , snapshotCreatedAt = 1234567890
+            , snapshotFileCount = 1
+            , snapshotTotalBytes = 10
+            , snapshotEntries =
+                [ Directory "."
+                , RegularFile "link/child" dummyDigest 10
+                , SymbolicLink "link" "target"
+                ]
+            }
+        manifestPath = repository </> "snapshots" </> "bad"
+    writeSnapshot manifestPath badSnapshot
+    writeManifestDigest manifestPath (snapshotDigest badSnapshot)
+
+    restoreResult <- runExecutable ["restore", "bad", restored, "--repo", repository]
+    assertLeftContaining "restore rejects manifest where child precedes symlink" "path descends through a symlink: link/child" restoreResult
+
+    restoredExists <- doesPathExist restored
+    assertBool "restore must fail upfront before creating the target directory" (not restoredExists)
+
+    verifyResult <- runExecutable ["verify", "--repo", repository]
+    assertLeftContaining "verify rejects manifest where child precedes symlink" "path descends through a symlink: link/child" verifyResult
 
 testHelp :: IO ()
 testHelp = do
