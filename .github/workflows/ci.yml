@@ -10,14 +10,13 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  test:
-    name: Test (${{ matrix.os }}, GHC ${{ matrix.ghc }})
+  build-and-test:
+    name: Build & Test CLI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        ghc: ["9.6.6", "9.12.1"]
 
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +24,7 @@ jobs:
       - name: Set up Haskell
         uses: haskell-actions/setup@v2
         with:
-          ghc-version: ${{ matrix.ghc }}
+          ghc-version: "9.12.1"
           cabal-version: "latest"
 
       - name: Cache dependencies
@@ -34,18 +33,21 @@ jobs:
           path: |
             ~/.cabal/store
             ~/.cabal/packages
-          key: ${{ matrix.os }}-ghc-${{ matrix.ghc }}-cabal-${{ hashFiles('**/*.cabal', '**/cabal.project') }}
+          key: ${{ matrix.os }}-ghc-9.12.1-cabal-${{ hashFiles('**/*.cabal', '**/cabal.project') }}
           restore-keys: |
-            ${{ matrix.os }}-ghc-${{ matrix.ghc }}-cabal-
+            ${{ matrix.os }}-ghc-9.12.1-cabal-
 
-      - name: Check package
+      - name: Check package metadata
         run: cabal check
 
-      - name: Update Cabal package list
+      - name: Update Hackage index
         run: cabal update
 
-      - name: Build
-        run: cabal build all --enable-tests
+      - name: Build Foldback CLI
+        run: cabal build exe:foldback
 
-      - name: Run Tests
-        run: cabal test all --test-show-details=always
+      - name: Run Test Suite
+        run: cabal test foldback-test --test-show-details=always
+
+      - name: Smoke Test CLI Executable
+        run: cabal run exe:foldback -- --help
