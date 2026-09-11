@@ -2,10 +2,12 @@ module Main (main) where
 
 import Control.Exception (SomeException, bracket, displayException, try)
 import Control.Monad (forM_, unless)
-import Foldback.Algebra
+import qualified Crypto.Hash.SHA256 as SHA256
 import Data.List (isInfixOf, isPrefixOf)
 import qualified Data.ByteString as BS
 import qualified Data.Set as Set
+import Foldback.Algebra
+import Numeric (showHex)
 import System.Directory
   ( createDirectory
   , createDirectoryLink
@@ -35,6 +37,7 @@ tests =
   [ ("derive manifest", testDerivesManifest)
   , ("backup and restore", testBackupAndRestore)
   , ("list and verify", testListAndVerify)
+  , ("list and verify many snapshots", testListAndVerifyManySnapshots)
   , ("detect corruption", testDetectsCorruption)
   , ("reject symlink source roots", testRejectsSymlinkSourceRoot)
   , ("reject optionlike snapshot name", testRejectsOptionlikeSnapshotName)
@@ -144,6 +147,57 @@ testListAndVerify = withTemporaryDirectory "foldback-list-test" $ \sandbox -> do
     "verify reports snapshots and unique content objects"
     (Right "verified 2 snapshots, 2 objects\n")
     verifyResult
+
+testListAndVerifyManySnapshots :: IO ()
+testListAndVerifyManySnapshots = withTemporaryDirectory "foldback-many-snapshots-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+      snapshotCount = 300 :: Int
+      descriptorLimit = 256
+      lastSnapshotName = "s" <> zeroPad 3 (snapshotCount - 1)
+  createDirectory source
+  writeFile (source </> "data.txt") "data"
+  firstBackup <- runExecutable ["backup", source, "--repo", repository, "--name", "s000"]
+  assertEqual "many-snapshot fixture starts with one snapshot" (Right "snapshot s000: 1 file, 4 bytes\n") firstBackup
+
+  template <- readFile (repository </> "snapshots" </> "s000")
+  length template `seq` forM_ [1 .. snapshotCount - 1] (writeSnapshotFixture repository template)
+
+  listResult <- runExecutableWithDescriptorLimit descriptorLimit ["list", "--repo", repository]
+  verifyResult <- runExecutableWithDescriptorLimit descriptorLimit ["verify", "--repo", repository]
+  case listResult of
+    Right output -> assertBool "list handles many snapshots within the descriptor limit" ((lastSnapshotName <> "\t1 files\t4 bytes\n") `isInfixOf` output)
+    Left message -> error ("list handles many snapshots within the descriptor limit: " <> message)
+
+  assertEqual
+    "verify handles many snapshots within the descriptor limit"
+    (Right ("verified " <> show snapshotCount <> " snapshots, 1 objects\n"))
+    verifyResult
+ where
+  writeSnapshotFixture repository template number = do
+    let name = "s" <> zeroPad 3 number
+        manifestPath = repository </> "snapshots" </> name
+        sidecarPath = repository </> "snapshots" </> ("." <> name <> ".digest")
+        needle = "snapshotName = \"s000\""
+        replacement = "snapshotName = \"" <> name <> "\""
+        manifest = replaceFirst needle replacement template
+        digest = sha256Hex manifest
+    length manifest `seq` writeFile manifestPath manifest
+    BS.writeFile sidecarPath (BS.pack (map (fromIntegral . fromEnum) (digest <> "\n")))
+
+  zeroPad width number = replicate (width - length digits) '0' <> digits
+   where
+    digits = show number
+
+  sha256Hex content = concatMap hexByte (BS.unpack (SHA256.hash (BS.pack (map (fromIntegral . fromEnum) content))))
+
+  hexByte byte = case showHex byte "" of
+    [digit] -> ['0', digit]
+    digits -> digits
+
+  replaceFirst needle replacement content = case breakOnFirst needle content of
+    Nothing -> error ("many-snapshot fixture could not find " <> show needle)
+    Just (before, after) -> before <> replacement <> after
 
 testDetectsCorruption :: IO ()
 testDetectsCorruption = withTemporaryDirectory "foldback-corruption-test" $ \sandbox -> do
@@ -404,6 +458,15 @@ testHelp = do
 runExecutable :: [String] -> IO (Either String String)
 runExecutable arguments = do
   (exitCode, standardOutput, standardError) <- readProcessWithExitCode "foldback" arguments ""
+  pure $ case exitCode of
+    ExitSuccess -> Right standardOutput
+    ExitFailure _ -> Left standardError
+
+runExecutableWithDescriptorLimit :: Int -> [String] -> IO (Either String String)
+runExecutableWithDescriptorLimit limit arguments = do
+  let script = "ulimit -n " <> show limit <> " && exec foldback \"$@\""
+  (exitCode, standardOutput, standardError) <-
+    readProcessWithExitCode "sh" (["-c", script, "foldback"] <> arguments) ""
   pure $ case exitCode of
     ExitSuccess -> Right standardOutput
     ExitFailure _ -> Left standardError
