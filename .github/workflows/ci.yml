@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build-and-test:
+    name: Build & Test CLI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Haskell
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.12.1"
+          cabal-version: "latest"
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cabal/store
+            ~/.cabal/packages
+          key: ${{ matrix.os }}-ghc-9.12.1-cabal-${{ hashFiles('**/*.cabal', '**/cabal.project') }}
+          restore-keys: |
+            ${{ matrix.os }}-ghc-9.12.1-cabal-
+
+      - name: Check package metadata
+        run: cabal check
+
+      - name: Update Hackage index
+        run: cabal update
+
+      - name: Build Foldback CLI
+        run: cabal build exe:foldback
+
+      - name: Run Test Suite
+        run: cabal test foldback-test --test-show-details=always
+
+      - name: Smoke Test CLI Executable
+        run: cabal run exe:foldback -- --help
