@@ -210,7 +210,7 @@ ensureRepository repository = do
   validateRepositoryPath repository
   formatExists <- doesFileExist (repository </> "FORMAT")
   unless formatExists (ioError (userError ("not a foldback repository: " <> repository)))
-  format <- readFile (repository </> "FORMAT")
+  format <- readStrictFile (repository </> "FORMAT")
   unless (format == "foldback 1\n") (ioError (userError "unsupported repository format"))
 
 validateRepositoryPath :: FilePath -> IO ()
@@ -353,6 +353,11 @@ writeManifestDigest destination = do
   let sidecarPath = manifestDigestPath destination
   ByteString.writeFile sidecarPath (ByteString.pack (map (fromIntegral . fromEnum) (unDigest digest <> "\n")))
 
+readStrictFile :: FilePath -> IO String
+readStrictFile path = decode <$> ByteString.readFile path
+ where
+  decode = map (toEnum . fromIntegral) . ByteString.unpack
+
 manifestDigestPath :: FilePath -> FilePath
 manifestDigestPath manifestPath = takeDirectory manifestPath </> ("." <> takeName manifestPath <> ".digest")
  where
@@ -362,7 +367,7 @@ readManifestDigest :: FilePath -> IO Digest
 readManifestDigest manifestPath = do
   exists <- doesFileExist sidecarPath
   unless exists (ioError (userError ("corrupt snapshot manifest: no integrity digest for " <> takeName manifestPath)))
-  content <- readFile sidecarPath
+  content <- readStrictFile sidecarPath
   let digest = takeWhile (/= '\n') content
   unless (validDigest digest) (ioError (userError ("corrupt snapshot manifest: " <> takeName manifestPath)))
   pure (Digest digest)
@@ -380,7 +385,7 @@ readSnapshot :: FilePath -> IO Snapshot
 readSnapshot path = do
   exists <- doesFileExist path
   unless exists (ioError (userError ("snapshot does not exist: " <> takeName path)))
-  content <- readFile path
+  content <- readStrictFile path
   case readMaybe content of
     Nothing -> ioError (userError ("invalid snapshot: " <> path))
     Just snapshot -> pure snapshot
