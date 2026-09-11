@@ -114,6 +114,12 @@ testBackupAndRestore = withTemporaryDirectory "foldback-test" $ \sandbox -> do
   assertEqual "restored duplicate file content" "hello" restoredCopy
   assertEqual "restored symlink target" "docs/copy.txt" restoredLink
 
+  let restoredSlashed = sandbox </> "restored-slashed" <> "/"
+  restoreSlashedResult <- runExecutable ["restore", "first", restoredSlashed, "--repo", repository]
+  assertEqual "restore reports its slashed target" (Right ("restored first to " <> restoredSlashed <> "\n")) restoreSlashedResult
+  restoredSlashedHello <- readFile (sandbox </> "restored-slashed" </> "hello.txt")
+  assertEqual "restored file content from slash-suffixed target" "hello" restoredSlashedHello
+
 testListAndVerify :: IO ()
 testListAndVerify = withTemporaryDirectory "foldback-list-test" $ \sandbox -> do
   let source = sandbox </> "source"
@@ -202,6 +208,12 @@ testRejectsSymlinkRestoreTarget = withTemporaryDirectory "foldback-symlink-targe
     "restore target is not a directory:"
     brokenResult
 
+  brokenSlashedResult <- runExecutable ["restore", "s1", brokenTarget <> "/", "--repo", repository]
+  assertLeftContaining
+    "restore refuses a dangling symlink target, slash-suffixed"
+    "restore target is not a directory:"
+    brokenSlashedResult
+
   createFileLink (sandbox </> "empty-target-directory") (sandbox </> "valid-target")
   linkedResult <- runExecutable ["restore", "s1", sandbox </> "valid-target", "--repo", repository]
   assertLeftContaining
@@ -210,6 +222,14 @@ testRejectsSymlinkRestoreTarget = withTemporaryDirectory "foldback-symlink-targe
     linkedResult
   contents <- listDirectory (sandbox </> "empty-target-directory")
   assertEqual "nothing was written through the refused symlink target" (0 :: Int) (length contents)
+
+  linkedSlashedResult <- runExecutable ["restore", "s1", (sandbox </> "valid-target") <> "/", "--repo", repository]
+  assertLeftContaining
+    "restore refuses a symlink target pointing at a real directory, slash-suffixed"
+    "restore target is not a directory:"
+    linkedSlashedResult
+  contentsAfterSlashed <- listDirectory (sandbox </> "empty-target-directory")
+  assertEqual "nothing was written through the refused slashed symlink target" (0 :: Int) (length contentsAfterSlashed)
 
 testRejectsEmptyRestoreTarget :: IO ()
 testRejectsEmptyRestoreTarget = withTemporaryDirectory "foldback-empty-target-test" $ \sandbox -> do

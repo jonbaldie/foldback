@@ -126,7 +126,11 @@ backup repository requestedName unnormalisedSource = do
       }
 
 restore :: FilePath -> String -> FilePath -> IO ()
-restore repository name target = do
+restore repository name unnormalisedTarget = do
+  -- A trailing separator resolves the final path component, so lstat would
+  -- report the link's target and the symlink check below would pass. Drop it
+  -- before inspecting the path; real directories with a slash are unaffected.
+  let target = dropTrailingPathSeparator unnormalisedTarget
   validateSnapshotName name
   ensureRepository repository
   ensureDisjoint "restore target must be outside the repository" repository target
@@ -436,7 +440,11 @@ isPathPrefixOf :: FilePath -> FilePath -> Bool
 isPathPrefixOf parent child = addTrailingPathSeparator parent `isPrefixOf` child
 
 prepareTarget :: FilePath -> IO ()
-prepareTarget target = do
+prepareTarget unnormalisedTarget = do
+  -- A trailing separator resolves the final path component, so lstat would
+  -- report the link's target and the symlink check below would pass. Drop it
+  -- before inspecting the path; real directories with a slash are unaffected.
+  let target = dropTrailingPathSeparator unnormalisedTarget
   -- An empty target passes every following check vacuously and makes each
   -- restored entry resolve against the working directory, silently
   -- overwriting matching files there.
