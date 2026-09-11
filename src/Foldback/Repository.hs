@@ -1,11 +1,16 @@
 module Foldback.Repository
   ( BackupReceipt (..)
+  , Snapshot (..)
   , SnapshotInfo (..)
   , Verification (..)
   , backup
   , listSnapshots
+  , manifestDigestPath
   , restore
+  , snapshotDigest
   , verifyRepository
+  , writeManifestDigest
+  , writeSnapshot
   ) where
 
 import Control.Exception (bracket)
@@ -116,8 +121,9 @@ backup repository requestedName unnormalisedSource = do
           , snapshotFileCount = fileCount summary
           , snapshotTotalBytes = totalBytes summary
           }
+      digest = snapshotDigest snapshot
+  writeManifestDigest snapshotPath digest
   writeSnapshot snapshotPath snapshot
-  writeManifestDigest snapshotPath
   pure
     BackupReceipt
       { receiptName = name
@@ -246,7 +252,7 @@ validateCreatedSnapshotName name = do
     (take 1 name `elem` ["-", "."])
     (ioError (userError "snapshot names may not begin with '-' or '.'"))
 
--- Dotfiles and staging leftovers (".snapshot-", ".incoming-") in the live
+-- Dotfiles and staging leftovers (".snapshot-", ".incoming-", ".digest-") in the live
 -- directories are not repository artifacts; directory scans ignore them.
 isForeignArtifact :: String -> Bool
 isForeignArtifact name = take 1 name == "."
@@ -332,13 +338,19 @@ hexEncode = concatMap hexByte . ByteString.unpack
     [digit] -> ['0', digit]
     digits -> digits
 
+encodeSnapshot :: Snapshot -> ByteString.ByteString
+encodeSnapshot snapshot = ByteString.pack (map (fromIntegral . fromEnum) (show snapshot <> "\n"))
+
+snapshotDigest :: Snapshot -> Digest
+snapshotDigest snapshot = Digest (hexEncode (SHA256.hash (encodeSnapshot snapshot)))
+
 writeSnapshot :: FilePath -> Snapshot -> IO ()
 writeSnapshot destination snapshot =
   bracket
     (openBinaryTempFile (takeDirectory destination) ".snapshot-")
     cleanupTemporaryFile
     (\(temporaryPath, handle) -> do
-      ByteString.hPut handle (ByteString.pack (map (fromIntegral . fromEnum) (show snapshot <> "\n")))
+      ByteString.hPut handle (encodeSnapshot snapshot)
       hClose handle
       renameFile temporaryPath destination
     )
@@ -347,11 +359,20 @@ writeSnapshot destination snapshot =
 -- every structural check, so its serialized bytes are digested at commit time
 -- and re-checked whenever the record is read back. The sidecar lives beside
 -- the record under a dot name, which directory scans ignore as a non-artifact.
-writeManifestDigest :: FilePath -> IO ()
-writeManifestDigest destination = do
-  digest <- hashFile destination
-  let sidecarPath = manifestDigestPath destination
-  ByteString.writeFile sidecarPath (ByteString.pack (map (fromIntegral . fromEnum) (unDigest digest <> "\n")))
+-- The digest sidecar is staged into a temporary dotfile (".digest-") and
+-- atomically renamed before the snapshot manifest is published, guaranteeing
+-- crash resiliency: an interrupted backup leaves only hidden artifacts that do
+-- not corrupt repository listing or verification.
+writeManifestDigest :: FilePath -> Digest -> IO ()
+writeManifestDigest destination digest =
+  bracket
+    (openBinaryTempFile (takeDirectory destination) ".digest-")
+    cleanupTemporaryFile
+    (\(temporaryPath, handle) -> do
+      ByteString.hPut handle (ByteString.pack (map (fromIntegral . fromEnum) (unDigest digest <> "\n")))
+      hClose handle
+      renameFile temporaryPath (manifestDigestPath destination)
+    )
 
 readStrictFile :: FilePath -> IO String
 readStrictFile path = decode <$> ByteString.readFile path
