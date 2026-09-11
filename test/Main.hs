@@ -1,18 +1,24 @@
 module Main (main) where
 
+import Control.Concurrent (forkIO, killThread)
 import Control.Exception (SomeException, bracket, displayException, try)
-import Control.Monad (forM_, unless)
+import Control.Monad (forM_, unless, when)
 import qualified Crypto.Hash.SHA256 as SHA256
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf, isPrefixOf)
 import qualified Data.ByteString as BS
 import qualified Data.Set as Set
 import Foldback.Algebra
+import Foldback.Repository (manifestDigestPath, writeManifestDigest)
 import Numeric (showHex)
+import qualified System.Posix.Files as Posix
 import System.Directory
   ( createDirectory
   , createDirectoryLink
   , createDirectoryIfMissing
   , createFileLink
+  , doesDirectoryExist
+  , doesFileExist
   , doesPathExist
   , getCurrentDirectory
   , getSymbolicLinkTarget
@@ -48,6 +54,9 @@ tests =
   , ("tolerate foreign metadata files", testToleratesForeignMetadataFiles)
   , ("detect manifest tampering", testDetectsManifestTampering)
   , ("bounds streaming memory", testBoundsStreamingMemory)
+  , ("sidecar installed before manifest", testSidecarInstalledBeforeManifest)
+  , ("tolerate incomplete snapshot leftovers", testIncompleteSnapshotTolerated)
+  , ("atomic digest sidecar staging", testDigestSidecarAtomicStaging)
   , ("help", testHelp)
   ]
 
@@ -449,6 +458,107 @@ testBoundsStreamingMemory = withTemporaryDirectory "foldback-memory-bound-test" 
     chunk = BS.replicate 1024 120
     fill block handle =
       forM_ [1 .. size `div` BS.length block] (\_ -> BS.hPut handle block)
+
+testSidecarInstalledBeforeManifest :: IO ()
+testSidecarInstalledBeforeManifest = withTemporaryDirectory "foldback-order-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+  createDirectory source
+  forM_ [1 .. 50 :: Int] $ \i ->
+    writeFile (source </> ("f" <> show i <> ".txt")) (replicate 2000 'a')
+  let snapshotsDir = repository </> "snapshots"
+  seenInversionRef <- newIORef False
+  stopRef <- newIORef False
+  let watcher = do
+        stop <- readIORef stopRef
+        unless stop $ do
+          exists <- doesDirectoryExist snapshotsDir
+          when exists $ do
+            manifestExists <- doesFileExist (snapshotsDir </> "snap")
+            sidecarExists <- doesFileExist (snapshotsDir </> ".snap.digest")
+            when (manifestExists && not sidecarExists) $
+              writeIORef seenInversionRef True
+          watcher
+  bracket (forkIO watcher) killThread $ \_ -> do
+    backupResult <- runExecutable ["backup", source, "--repo", repository, "--name", "snap"]
+    assertRightContaining "backup succeeds" "snapshot snap:" backupResult
+    writeIORef stopRef True
+  inversion <- readIORef seenInversionRef
+  assertBool "digest sidecar must be installed before snapshot manifest is published" (not inversion)
+
+testIncompleteSnapshotTolerated :: IO ()
+testIncompleteSnapshotTolerated = withTemporaryDirectory "foldback-incomplete-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+  createDirectory source
+  writeFile (source </> "a.txt") "first snapshot"
+  backup1 <- runExecutable ["backup", source, "--repo", repository, "--name", "s1"]
+  assertEqual "first backup succeeds" (Right "snapshot s1: 1 file, 14 bytes\n") backup1
+
+  -- Simulate an interrupted backup of "s2" before the snapshot manifest is published.
+  -- Only hidden/temporary files were created:
+  -- 1. The digest sidecar staged and installed (.s2.digest)
+  -- 2. Leftover staging temporary dotfiles (.snapshot-incomplete, .digest-incomplete)
+  let snapshotsDir = repository </> "snapshots"
+      incompleteSidecar = snapshotsDir </> ".s2.digest"
+      incompleteSnapshotTemp = snapshotsDir </> ".snapshot-incomplete"
+      incompleteDigestTemp = snapshotsDir </> ".digest-incomplete"
+      incompleteObjectTemp = repository </> "objects" </> ".incoming-incomplete"
+  writeFile incompleteSidecar "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef\n"
+  writeFile incompleteSnapshotTemp "unfinalized snapshot manifest"
+  writeFile incompleteDigestTemp "unfinalized digest content"
+  writeFile incompleteObjectTemp "unfinalized object content"
+
+  -- listSnapshots must ignore all foreign/dot files and list only s1 cleanly
+  listResult <- runExecutable ["list", "--repo", repository]
+  assertEqual "list ignores incomplete snapshot dotfiles" (Right "s1\t1 files\t14 bytes\n") listResult
+
+  -- verifyRepository must ignore all foreign/dot files and verify s1 cleanly
+  verifyResult <- runExecutable ["verify", "--repo", repository]
+  assertEqual "verify ignores incomplete snapshot dotfiles" (Right "verified 1 snapshots, 1 objects\n") verifyResult
+
+  -- Now complete a clean backup of s2
+  writeFile (source </> "b.txt") "second snapshot"
+  backup2 <- runExecutable ["backup", source, "--repo", repository, "--name", "s2"]
+  assertEqual "subsequent backup of s2 succeeds" (Right "snapshot s2: 2 files, 29 bytes\n") backup2
+
+  listAfter <- runExecutable ["list", "--repo", repository]
+  assertEqual "list reports both snapshots" (Right "s1\t1 files\t14 bytes\ns2\t2 files\t29 bytes\n") listAfter
+
+  verifyAfter <- runExecutable ["verify", "--repo", repository]
+  assertEqual "verify reports both snapshots" (Right "verified 2 snapshots, 2 objects\n") verifyAfter
+
+testDigestSidecarAtomicStaging :: IO ()
+testDigestSidecarAtomicStaging = withTemporaryDirectory "foldback-staging-test" $ \sandbox -> do
+  let snapshotsDir = sandbox </> "snapshots"
+      manifestPath = snapshotsDir </> "snap1"
+      sidecarPath = manifestDigestPath manifestPath
+      initialDigest = Digest "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      updatedDigest = Digest "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+  createDirectory snapshotsDir
+
+  -- 1. writeManifestDigest creates and installs the sidecar
+  writeManifestDigest manifestPath initialDigest
+  initialContent <- readFile sidecarPath
+  assertEqual "sidecar contains formatted initial digest" (unDigest initialDigest <> "\n") initialContent
+  fileStatus1 <- Posix.getFileStatus sidecarPath
+  let initialInode = Posix.fileID fileStatus1
+
+  -- Verify no leftover staging temporary files
+  entriesAfterInitial <- listDirectory snapshotsDir
+  let stagingFiles = filter (\name -> ".digest-" `isPrefixOf` name) entriesAfterInitial
+  assertEqual "no staging temp files remain after successful write" ([] :: [String]) stagingFiles
+
+  -- 2. writeManifestDigest atomically updates an existing sidecar with a new inode
+  writeManifestDigest manifestPath updatedDigest
+  updatedContent <- readFile sidecarPath
+  assertEqual "sidecar contains atomically updated digest" (unDigest updatedDigest <> "\n") updatedContent
+  fileStatus2 <- Posix.getFileStatus sidecarPath
+  let updatedInode = Posix.fileID fileStatus2
+  assertBool "atomic staging via rename allocates a new inode" (initialInode /= updatedInode)
+
+  entriesAfterUpdate <- listDirectory snapshotsDir
+  assertEqual "no staging temp files remain after atomic update" ([] :: [String]) (filter (\name -> ".digest-" `isPrefixOf` name) entriesAfterUpdate)
 
 testHelp :: IO ()
 testHelp = do

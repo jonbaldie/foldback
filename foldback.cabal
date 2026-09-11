@@ -22,8 +22,8 @@ library
   exposed-modules:
       Foldback
       Foldback.Algebra
-  other-modules:
       Foldback.Repository
+  other-modules:
       Paths_foldback
   build-depends:
       base >=4.18 && <5
@@ -75,6 +75,7 @@ test-suite foldback-test
     , filepath >=1.4 && <1.6
     , foldback
     , process >=1.6 && <1.7
+    , unix >=2.7 && <2.9
 
 source-repository head
   type: git
