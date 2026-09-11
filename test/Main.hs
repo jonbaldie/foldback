@@ -34,6 +34,7 @@ tests =
   , ("detect corruption", testDetectsCorruption)
   , ("reject symlink source roots", testRejectsSymlinkSourceRoot)
   , ("reject optionlike snapshot name", testRejectsOptionlikeSnapshotName)
+  , ("reject symlink restore targets", testRejectsSymlinkRestoreTarget)
   , ("help", testHelp)
   ]
 
@@ -175,6 +176,32 @@ testRejectsOptionlikeSnapshotName = withTemporaryDirectory "foldback-optionlike-
   assertEqual "dash inside the name is still accepted" (Right "snapshot my-backup: 1 file, 4 bytes\n") dashInside
   restoreResult <- runExecutable ["restore", "my-backup", sandbox </> "restored", "--repo", repository]
   assertRightContaining "dash-inside names restore cleanly" "restored my-backup" restoreResult
+
+testRejectsSymlinkRestoreTarget :: IO ()
+testRejectsSymlinkRestoreTarget = withTemporaryDirectory "foldback-symlink-target-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+      brokenTarget = sandbox </> "broken-target"
+  createDirectory source
+  createDirectory (sandbox </> "empty-target-directory")
+  writeFile (source </> "a.txt") "data"
+  _ <- runExecutable ["backup", source, "--repo", repository, "--name", "s1"]
+  createFileLink (sandbox </> "missing-target") brokenTarget
+
+  brokenResult <- runExecutable ["restore", "s1", brokenTarget, "--repo", repository]
+  assertLeftContaining
+    "restore refuses a dangling symlink target"
+    "restore target is not a directory:"
+    brokenResult
+
+  createFileLink (sandbox </> "empty-target-directory") (sandbox </> "valid-target")
+  linkedResult <- runExecutable ["restore", "s1", sandbox </> "valid-target", "--repo", repository]
+  assertLeftContaining
+    "restore refuses a symlink target pointing at a real directory"
+    "restore target is not a directory:"
+    linkedResult
+  contents <- listDirectory (sandbox </> "empty-target-directory")
+  assertEqual "nothing was written through the refused symlink target" (0 :: Int) (length contents)
 
 testHelp :: IO ()
 testHelp = do

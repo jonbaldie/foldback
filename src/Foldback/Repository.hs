@@ -389,14 +389,16 @@ isPathPrefixOf parent child = addTrailingPathSeparator parent `isPrefixOf` child
 
 prepareTarget :: FilePath -> IO ()
 prepareTarget target = do
-  exists <- doesPathExist target
-  if exists
-    then do
-      isDirectory <- doesDirectoryExist target
-      unless isDirectory (ioError (userError ("restore target is not a directory: " <> target)))
+  -- Inspect the node itself, not what a symlink would resolve to: a dangling
+  -- symlink fails a following stat, and a link to a directory is not a
+  -- directory this command may write through.
+  targetStatus <- tryIOError (Posix.getSymbolicLinkStatus target)
+  case targetStatus of
+    Right status | Posix.isDirectory status -> do
       contents <- listDirectory target
       unless (null contents) (ioError (userError ("restore target is not empty: " <> target)))
-    else createDirectoryIfMissing True target
+    Right _ -> ioError (userError ("restore target is not a directory: " <> target))
+    Left _ -> createDirectoryIfMissing True target
 
 restoreEntry :: FilePath -> FilePath -> ManifestEntry -> IO ()
 restoreEntry _ _ (Directory ".") = pure ()
