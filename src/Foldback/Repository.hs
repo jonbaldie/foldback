@@ -117,6 +117,7 @@ backup repository requestedName unnormalisedSource = do
           , snapshotTotalBytes = totalBytes summary
           }
   writeSnapshot snapshotPath snapshot
+  writeManifestDigest snapshotPath
   pure
     BackupReceipt
       { receiptName = name
@@ -292,7 +293,11 @@ copyAndHash output context size input = do
     then pure (context, size)
     else do
       ByteString.hPut output chunk
-      copyAndHash output (SHA256.update context chunk) (size + fromIntegral (ByteString.length chunk)) input
+      let nextContext = SHA256.update context chunk
+          nextSize = size + fromIntegral (ByteString.length chunk)
+      -- Forcing the accumulators each iteration keeps memory bounded by the
+      -- chunk size; an unforced hash context retains every chunk read so far.
+      nextContext `seq` nextSize `seq` copyAndHash output nextContext nextSize input
 
 hashFile :: FilePath -> IO Digest
 hashFile path = do
@@ -303,7 +308,11 @@ hashFile path = do
     chunk <- ByteString.hGetSome input (64 * 1024)
     if ByteString.null chunk
       then pure context
-      else hashChunks (SHA256.update context chunk) input
+      else
+        let nextContext = SHA256.update context chunk
+        -- Same forcing discipline as copyAndHash: keep the context strict so
+        -- no thunk chain retains the chunks already consumed.
+        in nextContext `seq` hashChunks nextContext input
 
 hexEncode :: ByteString.ByteString -> String
 hexEncode = concatMap hexByte . ByteString.unpack
@@ -324,6 +333,33 @@ writeSnapshot destination snapshot =
       renameFile temporaryPath destination
     )
 
+-- A manifest damaged in a well-formed way (e.g. a renamed entry path) passes
+-- every structural check, so its serialized bytes are digested at commit time
+-- and re-checked whenever the record is read back. The sidecar lives beside
+-- the record under a dot name, which directory scans ignore as a non-artifact.
+writeManifestDigest :: FilePath -> IO ()
+writeManifestDigest destination = do
+  digest <- hashFile destination
+  let sidecarPath = manifestDigestPath destination
+  ByteString.writeFile sidecarPath (ByteString.pack (map (fromIntegral . fromEnum) (unDigest digest <> "\n")))
+
+manifestDigestPath :: FilePath -> FilePath
+manifestDigestPath manifestPath = takeDirectory manifestPath </> ("." <> takeName manifestPath <> ".digest")
+ where
+  takeName = reverse . takeWhile (/= '/') . reverse
+
+readManifestDigest :: FilePath -> IO Digest
+readManifestDigest manifestPath = do
+  exists <- doesFileExist sidecarPath
+  unless exists (ioError (userError ("corrupt snapshot manifest: no integrity digest for " <> takeName manifestPath)))
+  content <- readFile sidecarPath
+  let digest = takeWhile (/= '\n') content
+  unless (validDigest digest) (ioError (userError ("corrupt snapshot manifest: " <> takeName manifestPath)))
+  pure (Digest digest)
+ where
+  sidecarPath = manifestDigestPath manifestPath
+  takeName = reverse . takeWhile (/= '/') . reverse
+
 cleanupTemporaryFile :: (FilePath, Handle) -> IO ()
 cleanupTemporaryFile (path, handle) = do
   void (tryIOError (hClose handle))
@@ -343,8 +379,12 @@ readSnapshot path = do
 
 readNamedSnapshot :: FilePath -> String -> IO Snapshot
 readNamedSnapshot repository name = do
-  snapshot <- readSnapshot (repository </> "snapshots" </> name)
+  let manifestPath = repository </> "snapshots" </> name
+  snapshot <- readSnapshot manifestPath
   unless (snapshotName snapshot == name) (ioError (userError ("snapshot name does not match filename: " <> name)))
+  expectedDigest <- readManifestDigest manifestPath
+  actualDigest <- hashFile manifestPath
+  unless (actualDigest == expectedDigest) (ioError (userError ("corrupt snapshot manifest: " <> name)))
   pure snapshot
 
 validateSnapshot :: Snapshot -> IO ()

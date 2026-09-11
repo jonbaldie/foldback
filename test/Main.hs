@@ -1,8 +1,10 @@
 module Main (main) where
 
 import Control.Exception (SomeException, bracket, displayException, try)
+import Control.Monad (forM_, unless)
 import Foldback.Algebra
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, isPrefixOf)
+import qualified Data.ByteString as BS
 import qualified Data.Set as Set
 import System.Directory
   ( createDirectory
@@ -20,7 +22,7 @@ import System.Directory
   )
 import System.Exit (ExitCode (..), exitFailure)
 import System.FilePath ((</>))
-import System.IO (hClose, openTempFile)
+import System.IO (IOMode (WriteMode), hClose, openTempFile, withBinaryFile)
 import System.Process (readProcessWithExitCode)
 
 main :: IO ()
@@ -39,6 +41,8 @@ tests =
   , ("reject symlink restore targets", testRejectsSymlinkRestoreTarget)
   , ("reject empty restore target", testRejectsEmptyRestoreTarget)
   , ("tolerate foreign metadata files", testToleratesForeignMetadataFiles)
+  , ("detect manifest tampering", testDetectsManifestTampering)
+  , ("bounds streaming memory", testBoundsStreamingMemory)
   , ("help", testHelp)
   ]
 
@@ -260,6 +264,80 @@ testToleratesForeignMetadataFiles = withTemporaryDirectory "foldback-foreign-met
   restoreResult <- runExecutable ["restore", "s1", sandbox </> "restored", "--repo", repository]
   assertRightContaining "restore of a real snapshot is unaffected" "restored s1" restoreResult
 
+testDetectsManifestTampering :: IO ()
+testDetectsManifestTampering = withTemporaryDirectory "foldback-manifest-tamper-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+  createDirectory source
+  writeFile (source </> "a.txt") "precious data"
+  _ <- runExecutable ["backup", source, "--repo", repository, "--name", "s"]
+
+  rewriteManifestEntryName repository "s" "a.txt" "z.txt"
+
+  verifyResult <- runExecutable ["verify", "--repo", repository]
+  assertLeftContaining "verify identifies a damaged manifest" "corrupt snapshot" verifyResult
+
+  restoreResult <- runExecutable ["restore", "s", sandbox </> "restored", "--repo", repository]
+  assertLeftContaining "restore refuses a damaged manifest" "corrupt snapshot" restoreResult
+
+-- Rewrites a manifest entry's path in place while keeping the record
+-- well-formed, simulating on-disk damage the record layer alone cannot see.
+rewriteManifestEntryName :: FilePath -> String -> String -> String -> IO ()
+rewriteManifestEntryName repository name from to = do
+  let manifestPath = repository </> "snapshots" </> name
+  content <- readFile manifestPath
+  damaged <- case breakOnFirst ('"' : from ++ "\"") content of
+    Nothing -> error ("test fixture could not find " <> show from <> " in the manifest")
+    Just (before, after) -> pure (before <> ('"' : to ++ "\"" <> after))
+  length damaged `seq` writeFile manifestPath damaged
+
+breakOnFirst :: String -> String -> Maybe (String, String)
+breakOnFirst needle = go ""
+ where
+  go _ [] = Nothing
+  go acc rest@(character : characters)
+    | needle `isPrefixOf` rest = Just (reverse acc, drop (length needle) rest)
+    | otherwise = go (character : acc) characters
+
+testBoundsStreamingMemory :: IO ()
+testBoundsStreamingMemory = withTemporaryDirectory "foldback-memory-bound-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+      restored = sandbox </> "restored"
+      megabyte = 1024 * 1024
+      size = 128 * megabyte
+      bound = 30 * megabyte
+  createDirectory source
+  writeFilledFile (source </> "big.bin") size
+
+  backupResidency <- measureResidency ["backup", source, "--repo", repository, "--name", "s1"]
+  verifyResidency <- measureResidency ["verify", "--repo", repository]
+  restoreResidency <- measureResidency ["restore", "s1", restored, "--repo", repository]
+
+  forM_
+    [ ("backup", backupResidency)
+    , ("verify", verifyResidency)
+    , ("restore", restoreResidency)
+    ]
+    (\(command, residency) ->
+      assertBool
+        (command <> " peak residency " <> show residency <> " exceeds the " <> show bound <> " bound")
+        (residency <= bound))
+ where
+  measureResidency arguments = do
+    (_, _, statistics) <- readProcessWithExitCode "foldback" (arguments <> ["+RTS", "-s"]) ""
+    case [line | line <- lines statistics, "maximum residency" `isInfixOf` line] of
+      (line : _) -> case words line of
+        (number : _) -> pure (read (filter (/= ',') number))
+        [] -> error ("no residency figure in RTS statistics: " <> line)
+      [] -> error ("the executable did not report RTS statistics; is -rtsopts enabled? output: " <> statistics)
+
+  writeFilledFile path size = withBinaryFile path WriteMode (fill chunk)
+   where
+    chunk = BS.replicate 1024 120
+    fill block handle =
+      forM_ [1 .. size `div` BS.length block] (\_ -> BS.hPut handle block)
+
 testHelp :: IO ()
 testHelp = do
   helpResult <- runExecutable ["--help"]
@@ -291,6 +369,9 @@ assertEqual :: (Eq a, Show a) => String -> a -> a -> IO ()
 assertEqual label expected actual
   | expected == actual = pure ()
   | otherwise = error (label <> "\nexpected: " <> show expected <> "\n but got: " <> show actual)
+
+assertBool :: String -> Bool -> IO ()
+assertBool label condition = unless condition (error label)
 
 assertLeftContaining :: String -> String -> Either String a -> IO ()
 assertLeftContaining label expected result = case result of
