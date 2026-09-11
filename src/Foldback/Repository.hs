@@ -293,7 +293,11 @@ copyAndHash output context size input = do
     then pure (context, size)
     else do
       ByteString.hPut output chunk
-      copyAndHash output (SHA256.update context chunk) (size + fromIntegral (ByteString.length chunk)) input
+      let nextContext = SHA256.update context chunk
+          nextSize = size + fromIntegral (ByteString.length chunk)
+      -- Forcing the accumulators each iteration keeps memory bounded by the
+      -- chunk size; an unforced hash context retains every chunk read so far.
+      nextContext `seq` nextSize `seq` copyAndHash output nextContext nextSize input
 
 hashFile :: FilePath -> IO Digest
 hashFile path = do
@@ -304,7 +308,11 @@ hashFile path = do
     chunk <- ByteString.hGetSome input (64 * 1024)
     if ByteString.null chunk
       then pure context
-      else hashChunks (SHA256.update context chunk) input
+      else
+        let nextContext = SHA256.update context chunk
+        -- Same forcing discipline as copyAndHash: keep the context strict so
+        -- no thunk chain retains the chunks already consumed.
+        in nextContext `seq` hashChunks nextContext input
 
 hexEncode :: ByteString.ByteString -> String
 hexEncode = concatMap hexByte . ByteString.unpack

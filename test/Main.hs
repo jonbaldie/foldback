@@ -1,8 +1,10 @@
 module Main (main) where
 
 import Control.Exception (SomeException, bracket, displayException, try)
+import Control.Monad (forM_, unless)
 import Foldback.Algebra
 import Data.List (isInfixOf, isPrefixOf)
+import qualified Data.ByteString as BS
 import qualified Data.Set as Set
 import System.Directory
   ( createDirectory
@@ -20,7 +22,7 @@ import System.Directory
   )
 import System.Exit (ExitCode (..), exitFailure)
 import System.FilePath ((</>))
-import System.IO (hClose, openTempFile)
+import System.IO (IOMode (WriteMode), hClose, openTempFile, withBinaryFile)
 import System.Process (readProcessWithExitCode)
 
 main :: IO ()
@@ -40,6 +42,7 @@ tests =
   , ("reject empty restore target", testRejectsEmptyRestoreTarget)
   , ("tolerate foreign metadata files", testToleratesForeignMetadataFiles)
   , ("detect manifest tampering", testDetectsManifestTampering)
+  , ("bounds streaming memory", testBoundsStreamingMemory)
   , ("help", testHelp)
   ]
 
@@ -296,6 +299,45 @@ breakOnFirst needle = go ""
     | needle `isPrefixOf` rest = Just (reverse acc, drop (length needle) rest)
     | otherwise = go (character : acc) characters
 
+testBoundsStreamingMemory :: IO ()
+testBoundsStreamingMemory = withTemporaryDirectory "foldback-memory-bound-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+      restored = sandbox </> "restored"
+      megabyte = 1024 * 1024
+      size = 128 * megabyte
+      bound = 30 * megabyte
+  createDirectory source
+  writeFilledFile (source </> "big.bin") size
+
+  backupResidency <- measureResidency ["backup", source, "--repo", repository, "--name", "s1"]
+  verifyResidency <- measureResidency ["verify", "--repo", repository]
+  restoreResidency <- measureResidency ["restore", "s1", restored, "--repo", repository]
+
+  forM_
+    [ ("backup", backupResidency)
+    , ("verify", verifyResidency)
+    , ("restore", restoreResidency)
+    ]
+    (\(command, residency) ->
+      assertBool
+        (command <> " peak residency " <> show residency <> " exceeds the " <> show bound <> " bound")
+        (residency <= bound))
+ where
+  measureResidency arguments = do
+    (_, _, statistics) <- readProcessWithExitCode "foldback" (arguments <> ["+RTS", "-s"]) ""
+    case [line | line <- lines statistics, "maximum residency" `isInfixOf` line] of
+      (line : _) -> case words line of
+        (number : _) -> pure (read (filter (/= ',') number))
+        [] -> error ("no residency figure in RTS statistics: " <> line)
+      [] -> error ("the executable did not report RTS statistics; is -rtsopts enabled? output: " <> statistics)
+
+  writeFilledFile path size = withBinaryFile path WriteMode (fill chunk)
+   where
+    chunk = BS.replicate 1024 120
+    fill block handle =
+      forM_ [1 .. size `div` BS.length block] (\_ -> BS.hPut handle block)
+
 testHelp :: IO ()
 testHelp = do
   helpResult <- runExecutable ["--help"]
@@ -327,6 +369,9 @@ assertEqual :: (Eq a, Show a) => String -> a -> a -> IO ()
 assertEqual label expected actual
   | expected == actual = pure ()
   | otherwise = error (label <> "\nexpected: " <> show expected <> "\n but got: " <> show actual)
+
+assertBool :: String -> Bool -> IO ()
+assertBool label condition = unless condition (error label)
 
 assertLeftContaining :: String -> String -> Either String a -> IO ()
 assertLeftContaining label expected result = case result of
