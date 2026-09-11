@@ -33,6 +33,7 @@ tests =
   , ("list and verify", testListAndVerify)
   , ("detect corruption", testDetectsCorruption)
   , ("reject symlink source roots", testRejectsSymlinkSourceRoot)
+  , ("reject optionlike snapshot name", testRejectsOptionlikeSnapshotName)
   , ("help", testHelp)
   ]
 
@@ -151,6 +152,23 @@ testRejectsSymlinkSourceRoot = withTemporaryDirectory "foldback-symlink-root-tes
   createDirectoryLink source sourceLink
   backupResult <- runExecutable ["backup", sourceLink, "--repo", repository, "--name", "invalid"]
   assertLeftContaining "backup requires a real directory root" "source is not a directory:" backupResult
+
+testRejectsOptionlikeSnapshotName :: IO ()
+testRejectsOptionlikeSnapshotName = withTemporaryDirectory "foldback-optionlike-name-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+  createDirectory source
+  writeFile (source </> "a.txt") "data"
+
+  dashNamed <- runExecutable ["backup", source, "--repo", repository, "--name", "-w"]
+  assertLeftContaining "backup refuses a leading-dash snapshot name" "snapshot name" dashNamed
+  snapshotNames <- listDirectory (repository </> "snapshots")
+  assertEqual "no snapshot is created for a refused name" (0 :: Int) (length snapshotNames)
+
+  dashInside <- runExecutable ["backup", source, "--repo", repository, "--name", "my-backup"]
+  assertEqual "dash inside the name is still accepted" (Right "snapshot my-backup: 1 file, 4 bytes\n") dashInside
+  restoreResult <- runExecutable ["restore", "my-backup", sandbox </> "restored", "--repo", repository]
+  assertRightContaining "dash-inside names restore cleanly" "restored my-backup" restoreResult
 
 testHelp :: IO ()
 testHelp = do

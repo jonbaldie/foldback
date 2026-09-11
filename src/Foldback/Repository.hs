@@ -95,7 +95,7 @@ backup repository requestedName source = do
   initializeRepository repository
   ensureRepository repository
   name <- maybe generatedSnapshotName pure requestedName
-  validateSnapshotName name
+  validateCreatedSnapshotName name
   let snapshotPath = repository </> "snapshots" </> name
   collision <- doesPathExist snapshotPath
   when collision (ioError (userError ("snapshot already exists: " <> name)))
@@ -217,6 +217,15 @@ validateSnapshotName name =
       && name /= "."
       && name /= ".."
       && all (\character -> isAlphaNum character || character `elem` ("._-" :: String)) name
+
+-- Names are refused at creation time when no command could ever address them:
+-- the argument parser treats a leading dash as an option, so such a snapshot
+-- would be listed and verified but never restorable. Read paths keep accepting
+-- the looser charset so repositories from before this check stay navigable.
+validateCreatedSnapshotName :: String -> IO ()
+validateCreatedSnapshotName name = do
+  validateSnapshotName name
+  when (take 1 name == "-") (ioError (userError "snapshot names may not begin with '-'"))
 
 scanTree :: FilePath -> FilePath -> FilePath -> IO (Fix FsF)
 scanTree repository source relative = do
