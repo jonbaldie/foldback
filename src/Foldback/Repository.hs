@@ -200,16 +200,22 @@ verifyRepository repository = do
 
 initializeRepository :: FilePath -> IO ()
 initializeRepository repository = do
+  validateRepositoryPath repository
   createDirectoryIfMissing True (repository </> "objects")
   createDirectoryIfMissing True (repository </> "snapshots")
   writeFileIfMissing (repository </> "FORMAT") "foldback 1\n"
 
 ensureRepository :: FilePath -> IO ()
 ensureRepository repository = do
+  validateRepositoryPath repository
   formatExists <- doesFileExist (repository </> "FORMAT")
   unless formatExists (ioError (userError ("not a foldback repository: " <> repository)))
   format <- readFile (repository </> "FORMAT")
   unless (format == "foldback 1\n") (ioError (userError "unsupported repository format"))
+
+validateRepositoryPath :: FilePath -> IO ()
+validateRepositoryPath repository =
+  when (null repository) (ioError (userError "--repo cannot be empty"))
 
 writeFileIfMissing :: FilePath -> String -> IO ()
 writeFileIfMissing path content = do

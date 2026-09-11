@@ -126,7 +126,10 @@ exactlyOne _ [value] = Right value
 exactlyOne problem _ = Left problem
 
 requireRepository :: Maybe FilePath -> Either String FilePath
-requireRepository = maybe (Left "--repo is required") Right
+requireRepository Nothing = Left "--repo is required"
+requireRepository (Just repository)
+  | null repository = Left "--repo cannot be empty"
+  | otherwise = Right repository
 
 rejectName :: Maybe String -> Either String ()
 rejectName Nothing = Right ()
