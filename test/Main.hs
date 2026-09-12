@@ -66,6 +66,7 @@ tests =
   , ("tolerate incomplete snapshot leftovers", testIncompleteSnapshotTolerated)
   , ("atomic digest sidecar staging", testDigestSidecarAtomicStaging)
   , ("reject symlink traversal order independent", testRejectsSymlinkTraversalOrderIndependent)
+  , ("reject incoherent directory trees", testRejectsIncoherentDirectoryTrees)
   , ("help", testHelp)
   ]
 
@@ -684,6 +685,153 @@ testRejectsSymlinkTraversalOrderIndependent = do
 
     verifyResult <- runExecutable ["verify", "--repo", repository]
     assertLeftContaining "verify rejects manifest where child precedes symlink" "path descends through a symlink: link/child" verifyResult
+
+testRejectsIncoherentDirectoryTrees :: IO ()
+testRejectsIncoherentDirectoryTrees = do
+  let dummyDigest = Digest (replicate 64 'a')
+
+  -- 1. Nested file path without parent Directory entry must fail validation
+  resultMissingParentFile <- try (validatePaths [RegularFile "docs/guide.txt" dummyDigest 10])
+  case resultMissingParentFile of
+    Left (e :: SomeException) ->
+      assertBool "missing parent for file error" ("missing parent directory" `isInfixOf` displayException e)
+    Right () ->
+      error "expected validation failure when file parent directory is missing, but it passed"
+
+  -- 2. Nested directory path without parent Directory entry must fail validation
+  resultMissingParentDir <- try (validatePaths [Directory "docs/sub"])
+  case resultMissingParentDir of
+    Left (e :: SomeException) ->
+      assertBool "missing parent for dir error" ("missing parent directory" `isInfixOf` displayException e)
+    Right () ->
+      error "expected validation failure when dir parent directory is missing, but it passed"
+
+  -- 3. Out-of-order Directory entry appearing after its child must fail validation
+  resultOutOfOrder <- try (validatePaths [Directory "docs/sub", Directory "docs"])
+  case resultOutOfOrder of
+    Left (e :: SomeException) ->
+      assertBool "out of order directory error" ("missing parent directory" `isInfixOf` displayException e)
+    Right () ->
+      error "expected validation failure when directory appears after child, but it passed"
+
+  -- 4. RegularFile as an ancestor prefix of a Directory must fail validation (both orders)
+  resultFilePrefixDir <- try (validatePaths [RegularFile "docs" dummyDigest 10, Directory "docs/sub"])
+  case resultFilePrefixDir of
+    Left (e :: SomeException) ->
+      assertBool "regular file prefix of dir error" ("path descends through a regular file: docs/sub" `isInfixOf` displayException e)
+    Right () ->
+      error "expected validation failure when regular file is ancestor of dir, but it passed"
+
+  resultFilePrefixDirRev <- try (validatePaths [Directory "docs/sub", RegularFile "docs" dummyDigest 10])
+  case resultFilePrefixDirRev of
+    Left (e :: SomeException) ->
+      assertBool "out of order regular file prefix of dir error" ("path descends through a regular file: docs/sub" `isInfixOf` displayException e)
+    Right () ->
+      error "expected validation failure when dir precedes regular file ancestor, but it passed"
+
+  -- 5. RegularFile as an ancestor prefix of another RegularFile must fail validation (both orders)
+  resultFilePrefixFile <- try (validatePaths [RegularFile "docs" dummyDigest 10, RegularFile "docs/child.txt" dummyDigest 5])
+  case resultFilePrefixFile of
+    Left (e :: SomeException) ->
+      assertBool "regular file prefix of file error" ("path descends through a regular file: docs/child.txt" `isInfixOf` displayException e)
+    Right () ->
+      error "expected validation failure when regular file is ancestor of file, but it passed"
+
+  resultFilePrefixFileRev <- try (validatePaths [RegularFile "docs/child.txt" dummyDigest 5, RegularFile "docs" dummyDigest 10])
+  case resultFilePrefixFileRev of
+    Left (e :: SomeException) ->
+      assertBool "out of order regular file prefix of file error" ("path descends through a regular file: docs/child.txt" `isInfixOf` displayException e)
+    Right () ->
+      error "expected validation failure when file precedes regular file ancestor, but it passed"
+
+  -- 6. End-to-end repository verify and restore reject incoherent directory trees upfront
+  withTemporaryDirectory "foldback-incoherent-tree-test" $ \sandbox -> do
+    let source = sandbox </> "source"
+        repository = sandbox </> "repository"
+        restored = sandbox </> "restored"
+    createDirectory source
+    writeFile (source </> "dummy.txt") "content"
+    _ <- runExecutable ["backup", source, "--repo", repository, "--name", "base"]
+
+    -- (a) Missing parent directory snapshot
+    let missingParentSnap =
+          Snapshot
+            { snapshotFormat = 1
+            , snapshotName = "missing-parent"
+            , snapshotCreatedAt = 1234567890
+            , snapshotFileCount = 1
+            , snapshotTotalBytes = 10
+            , snapshotEntries =
+                [ Directory "."
+                , RegularFile "docs/child" dummyDigest 10
+                ]
+            }
+        missingParentPath = repository </> "snapshots" </> "missing-parent"
+    writeSnapshot missingParentPath missingParentSnap
+    writeManifestDigest missingParentPath (snapshotDigest missingParentSnap)
+
+    verifyMissingParent <- runExecutable ["verify", "--repo", repository]
+    assertLeftContaining "verify rejects manifest with missing parent directory" "missing parent directory: docs" verifyMissingParent
+
+    restoreMissingParent <- runExecutable ["restore", "missing-parent", restored, "--repo", repository]
+    assertLeftContaining "restore rejects manifest with missing parent directory" "missing parent directory: docs" restoreMissingParent
+
+    restoredExists1 <- doesPathExist restored
+    assertBool "restore must fail upfront before creating the target directory" (not restoredExists1)
+
+    -- (b) Out-of-order directory snapshot
+    let outOfOrderSnap =
+          Snapshot
+            { snapshotFormat = 1
+            , snapshotName = "out-of-order"
+            , snapshotCreatedAt = 1234567891
+            , snapshotFileCount = 0
+            , snapshotTotalBytes = 0
+            , snapshotEntries =
+                [ Directory "."
+                , Directory "docs/sub"
+                , Directory "docs"
+                ]
+            }
+        outOfOrderPath = repository </> "snapshots" </> "out-of-order"
+    writeSnapshot outOfOrderPath outOfOrderSnap
+    writeManifestDigest outOfOrderPath (snapshotDigest outOfOrderSnap)
+
+    verifyOutOfOrder <- runExecutable ["verify", "--repo", repository]
+    assertLeftContaining "verify rejects manifest with out-of-order directory" "missing parent directory: docs" verifyOutOfOrder
+
+    restoreOutOfOrder <- runExecutable ["restore", "out-of-order", restored, "--repo", repository]
+    assertLeftContaining "restore rejects manifest with out-of-order directory" "missing parent directory: docs" restoreOutOfOrder
+
+    restoredExists2 <- doesPathExist restored
+    assertBool "restore out-of-order must fail upfront before creating target" (not restoredExists2)
+
+    -- (c) File prefix collision snapshot
+    let fileCollisionSnap =
+          Snapshot
+            { snapshotFormat = 1
+            , snapshotName = "file-collision"
+            , snapshotCreatedAt = 1234567892
+            , snapshotFileCount = 1
+            , snapshotTotalBytes = 10
+            , snapshotEntries =
+                [ Directory "."
+                , RegularFile "docs" dummyDigest 10
+                , Directory "docs/sub"
+                ]
+            }
+        fileCollisionPath = repository </> "snapshots" </> "file-collision"
+    writeSnapshot fileCollisionPath fileCollisionSnap
+    writeManifestDigest fileCollisionPath (snapshotDigest fileCollisionSnap)
+
+    verifyFileCollision <- runExecutable ["verify", "--repo", repository]
+    assertLeftContaining "verify rejects manifest with file-prefix collision" "path descends through a regular file: docs/sub" verifyFileCollision
+
+    restoreFileCollision <- runExecutable ["restore", "file-collision", restored, "--repo", repository]
+    assertLeftContaining "restore rejects manifest with file-prefix collision" "path descends through a regular file: docs/sub" restoreFileCollision
+
+    restoredExists3 <- doesPathExist restored
+    assertBool "restore file-collision must fail upfront before creating target" (not restoredExists3)
 
 testHelp :: IO ()
 testHelp = do

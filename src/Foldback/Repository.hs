@@ -444,15 +444,22 @@ validDigest digest =
     && all (\character -> isDigit character || (isHexDigit character && isLower character)) digest
 
 validatePaths :: [ManifestEntry] -> IO ()
-validatePaths manifestEntries = void (foldM validate Set.empty manifestEntries)
+validatePaths manifestEntries = void (foldM validate (Set.empty, Set.singleton ".") manifestEntries)
  where
   symlinks = [path | SymbolicLink path _ <- manifestEntries]
-  validate seen entry = do
+  regularFiles = [path | RegularFile path _ _ <- manifestEntries]
+  validate (seen, establishedDirs) entry = do
     let path = entryPath entry
+        parent = takeDirectory path
     unless (safeRelativePath path) (ioError (userError ("unsafe snapshot path: " <> path)))
     when (Set.member path seen) (ioError (userError ("duplicate snapshot path: " <> path)))
     when (any (`isPathPrefixOf` path) symlinks) (ioError (userError ("path descends through a symlink: " <> path)))
-    pure (Set.insert path seen)
+    when (any (`isPathPrefixOf` path) regularFiles) (ioError (userError ("path descends through a regular file: " <> path)))
+    unless (Set.member parent establishedDirs) (ioError (userError ("missing parent directory: " <> parent)))
+    let nextEstablishedDirs = case entry of
+          Directory dir -> Set.insert dir establishedDirs
+          _ -> establishedDirs
+    pure (Set.insert path seen, nextEstablishedDirs)
 
 entryPath :: ManifestEntry -> FilePath
 entryPath (Directory path) = path
