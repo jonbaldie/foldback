@@ -1,6 +1,6 @@
 module Main (main) where
 
-import Control.Concurrent (forkIO, killThread)
+import Control.Concurrent (forkIO, killThread, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (SomeException, bracket, displayException, try)
 import Control.Monad (forM_, unless, when)
 import qualified Crypto.Hash.SHA256 as SHA256
@@ -67,6 +67,7 @@ tests =
   , ("sidecar installed before manifest", testSidecarInstalledBeforeManifest)
   , ("tolerate incomplete snapshot leftovers", testIncompleteSnapshotTolerated)
   , ("atomic digest sidecar staging", testDigestSidecarAtomicStaging)
+  , ("concurrent same snapshot name", testConcurrentSameSnapshotName)
   , ("reject symlink traversal order independent", testRejectsSymlinkTraversalOrderIndependent)
   , ("reject incoherent directory trees", testRejectsIncoherentDirectoryTrees)
   , ("help", testHelp)
@@ -649,6 +650,61 @@ testDigestSidecarAtomicStaging = withTemporaryDirectory "foldback-staging-test" 
 
   entriesAfterUpdate <- listDirectory snapshotsDir
   assertEqual "no staging temp files remain after atomic update" ([] :: [String]) (filter (\name -> ".digest-" `isPrefixOf` name) entriesAfterUpdate)
+
+testConcurrentSameSnapshotName :: IO ()
+testConcurrentSameSnapshotName = withTemporaryDirectory "foldback-concurrent-name-test" $ \sandbox ->
+  forM_ [1 .. 5 :: Int] $ \attempt -> do
+    let caseDir = sandbox </> ("case-" <> show attempt)
+        sourceA = caseDir </> "source-a"
+        sourceB = caseDir </> "source-b"
+        repository = caseDir </> "repository"
+    createDirectoryIfMissing True sourceA
+    createDirectoryIfMissing True sourceB
+    writeFile (sourceA </> "a.bin") "from-a"
+    writeFile (sourceB </> "b.bin") "from-b"
+
+    resultAVar <- newEmptyMVar
+    resultBVar <- newEmptyMVar
+    _ <- forkIO (runExecutable ["backup", sourceA, "--repo", repository, "--name", "same"] >>= putMVar resultAVar)
+    _ <- forkIO (runExecutable ["backup", sourceB, "--repo", repository, "--name", "same"] >>= putMVar resultBVar)
+    resultA <- takeMVar resultAVar
+    resultB <- takeMVar resultBVar
+
+    let successes = [output | Right output <- [resultA, resultB]]
+        failures = [message | Left message <- [resultA, resultB]]
+    assertEqual "exactly one concurrent backup succeeds" (1 :: Int) (length successes)
+    assertEqual "exactly one concurrent backup fails" (1 :: Int) (length failures)
+    case failures of
+      [message] ->
+        assertBool
+          ("loser must report snapshot already exists, got: " <> message)
+          ("snapshot already exists: same" `isInfixOf` message)
+      _ -> error "expected one colliding backup failure"
+    case successes of
+      [output] ->
+        assertBool
+          ("winner must report the snapshot, got: " <> output)
+          ("snapshot same:" `isInfixOf` output)
+      _ -> error "expected one colliding backup success"
+
+    let expectedEntry = case (resultA, resultB) of
+          (Right _, Left _) -> "RegularFile \"a.bin\""
+          (Left _, Right _) -> "RegularFile \"b.bin\""
+          _ -> error "expected mixed concurrent outcomes"
+    manifest <- readFile (repository </> "snapshots" </> "same")
+    assertBool "winning manifest matches the successful source tree" (expectedEntry `isInfixOf` manifest)
+
+    snapshotNames <- filter (not . isPrefixOf ".") <$> listDirectory (repository </> "snapshots")
+    assertEqual "only the winning snapshot name is published" ["same"] snapshotNames
+
+    listResult <- runExecutable ["list", "--repo", repository]
+    assertEqual "list shows a single snapshot" (Right "same\t1 files\t6 bytes\n") listResult
+
+    verifyResult <- runExecutable ["verify", "--repo", repository]
+    assertEqual "winning snapshot remains verifiable" (Right "verified 1 snapshots, 1 objects\n") verifyResult
+
+    sequential <- runExecutable ["backup", sourceA, "--repo", repository, "--name", "same"]
+    assertLeftContaining "sequential reuse of the name is still refused" "snapshot already exists: same" sequential
 
 testRejectsSymlinkTraversalOrderIndependent :: IO ()
 testRejectsSymlinkTraversalOrderIndependent = do
