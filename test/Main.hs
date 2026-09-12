@@ -20,7 +20,8 @@ import Foldback.Repository
 import Numeric (showHex)
 import qualified System.Posix.Files as Posix
 import System.Directory
-  ( createDirectory
+  ( canonicalizePath
+  , createDirectory
   , createDirectoryLink
   , createDirectoryIfMissing
   , createFileLink
@@ -56,6 +57,7 @@ tests =
   , ("reject optionlike snapshot name", testRejectsOptionlikeSnapshotName)
   , ("reject optionlike repository value", testRejectsOptionlikeRepositoryValue)
   , ("reject symlink restore targets", testRejectsSymlinkRestoreTarget)
+  , ("reject symlink restore target ancestors", testRejectsSymlinkAncestorRestoreTarget)
   , ("reject empty restore target", testRejectsEmptyRestoreTarget)
   , ("reject empty repository path", testRejectsEmptyRepositoryPath)
   , ("reject --name outside backup", testRejectsNameOutsideBackup)
@@ -326,6 +328,42 @@ testRejectsSymlinkRestoreTarget = withTemporaryDirectory "foldback-symlink-targe
     linkedSlashedResult
   contentsAfterSlashed <- listDirectory (sandbox </> "empty-target-directory")
   assertEqual "nothing was written through the refused slashed symlink target" (0 :: Int) (length contentsAfterSlashed)
+
+testRejectsSymlinkAncestorRestoreTarget :: IO ()
+testRejectsSymlinkAncestorRestoreTarget = withTemporaryDirectory "foldback-symlink-ancestor-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+      outside = sandbox </> "outside"
+  createDirectory source
+  createDirectory outside
+  writeFile (source </> "a.txt") "data"
+  _ <- runExecutable ["backup", source, "--repo", repository, "--name", "s1"]
+  createDirectoryLink outside (sandbox </> "linked-parent")
+
+  newTargetResult <- runExecutable ["restore", "s1", sandbox </> "linked-parent" </> "new-target", "--repo", repository]
+  assertLeftContaining
+    "restore refuses a new target beneath a symlink ancestor"
+    "restore target is not a directory:"
+    newTargetResult
+  contents <- listDirectory outside
+  assertEqual "nothing was written through the symlink ancestor" (0 :: Int) (length contents)
+
+  createDirectory (sandbox </> "linked-parent" </> "existing-empty")
+  existingResult <- runExecutable ["restore", "s1", sandbox </> "linked-parent" </> "existing-empty", "--repo", repository]
+  assertLeftContaining
+    "restore refuses an existing target beneath a symlink ancestor"
+    "restore target is not a directory:"
+    existingResult
+  contentsAfterExisting <- listDirectory outside
+  assertEqual
+    "only the fixture directory exists behind the refused existing target"
+    (["existing-empty"] :: [String])
+    contentsAfterExisting
+
+  realResult <- runExecutable ["restore", "s1", sandbox </> "real-parent" </> "new-target", "--repo", repository]
+  assertRightContaining "restore beneath a real ancestor still works" "restored s1" realResult
+  restoredContent <- readFile (sandbox </> "real-parent" </> "new-target" </> "a.txt")
+  assertEqual "restored content beneath a real ancestor" "data" restoredContent
 
 testRejectsEmptyRestoreTarget :: IO ()
 testRejectsEmptyRestoreTarget = withTemporaryDirectory "foldback-empty-target-test" $ \sandbox -> do
@@ -859,7 +897,11 @@ withTemporaryDirectory template = bracket acquire cleanup
  where
   acquire = do
     temporaryRoot <- getTemporaryDirectory
-    (path, handle) <- openTempFile temporaryRoot template
+    -- The system temporary directory may itself sit behind a symlink (e.g.
+    -- /var -> /private/var on macOS), which restore now refuses to traverse.
+    -- Work from the canonical root so tests exercise ordinary hierarchies.
+    canonicalRoot <- canonicalizePath temporaryRoot
+    (path, handle) <- openTempFile canonicalRoot template
     hClose handle
     removeFile path
     createDirectoryIfMissing True path

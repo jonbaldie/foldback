@@ -487,6 +487,10 @@ prepareTarget unnormalisedTarget = do
   -- restored entry resolve against the working directory, silently
   -- overwriting matching files there.
   when (null target) (ioError (userError "restore target cannot be empty"))
+  -- Refuse symlink components anywhere in the target path before creating
+  -- anything: a missing target under a symlink ancestor would otherwise be
+  -- created inside the link's destination.
+  rejectSymlinkAncestors target
   -- Inspect the node itself, not what a symlink would resolve to: a dangling
   -- symlink fails a following stat, and a link to a directory is not a
   -- directory this command may write through.
@@ -497,6 +501,31 @@ prepareTarget unnormalisedTarget = do
       unless (null contents) (ioError (userError ("restore target is not empty: " <> target)))
     Right _ -> ioError (userError ("restore target is not a directory: " <> target))
     Left _ -> createDirectoryIfMissing True target
+
+-- Refuse a target path whose any existing component, from the root down to
+-- the target itself, is a symbolic link: creating a missing target under
+-- such an ancestor would resolve through the link and write snapshot files
+-- outside the intended location. Only existing components are inspected; the
+-- walk stops at the first missing prefix, since nothing beyond it can exist.
+rejectSymlinkAncestors :: FilePath -> IO ()
+rejectSymlinkAncestors target = go (pathPrefixes target)
+ where
+  go [] = pure ()
+  go (prefix : rest) = do
+    status <- tryIOError (Posix.getSymbolicLinkStatus prefix)
+    case status of
+      Right linkStatus
+        | Posix.isSymbolicLink linkStatus ->
+            ioError (userError ("restore target is not a directory: " <> target))
+        | otherwise -> go rest
+      Left _ -> pure ()
+
+-- Every prefix of a path, shortest first, including the path itself. Folding
+-- the split components with (</>) keeps a leading "/" for absolute paths and
+-- yields plain components for relative ones, so each prefix is exactly the
+-- level the filesystem resolves.
+pathPrefixes :: FilePath -> [FilePath]
+pathPrefixes path = drop 1 (scanl (</>) "" (splitDirectories path))
 
 restoreEntry :: FilePath -> FilePath -> ManifestEntry -> IO ()
 restoreEntry _ _ (Directory ".") = pure ()
