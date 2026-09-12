@@ -251,6 +251,21 @@ testRejectsSymlinkSourceRoot = withTemporaryDirectory "foldback-symlink-root-tes
     "source is not a directory:"
     backupSlashedResult
 
+  backupDottedResult <- runExecutable ["backup", sourceLink <> "/.", "--repo", repository, "--name", "invalid"]
+  assertLeftContaining
+    "backup requires a real directory root, dot-suffixed"
+    "source is not a directory:"
+    backupDottedResult
+
+  backupDotSlashedResult <- runExecutable ["backup", sourceLink <> "/./", "--repo", repository, "--name", "invalid"]
+  assertLeftContaining
+    "backup requires a real directory root, dot-and-slash-suffixed"
+    "source is not a directory:"
+    backupDotSlashedResult
+
+  dotBackupResult <- runExecutable ["backup", source <> "/.", "--repo", repository, "--name", "dotted"]
+  assertRightContaining "backup accepts a real directory with a dot suffix" "snapshot dotted" dotBackupResult
+
 testRejectsOptionlikeSnapshotName :: IO ()
 testRejectsOptionlikeSnapshotName = withTemporaryDirectory "foldback-optionlike-name-test" $ \sandbox -> do
   let source = sandbox </> "source"
