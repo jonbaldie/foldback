@@ -42,7 +42,8 @@ import Data.Maybe (catMaybes)
 import qualified Data.Set as Set
 import Data.Word (Word64)
 import System.Directory
-  ( createDirectory
+  ( canonicalizePath
+  , createDirectory
   , createDirectoryIfMissing
   , createFileLink
   , doesPathExist
@@ -739,8 +740,12 @@ corruptProbe env = do
 withScratch :: forall a. String -> (FilePath -> IO a) -> IO a
 withScratch label action = do
   temporary <- getTemporaryDirectory
+  -- The system temporary directory may itself sit behind a symlink (e.g.
+  -- /var -> /private/var on macOS), which restore refuses to traverse. Work
+  -- from the canonical root so scratch paths are ordinary hierarchies.
+  canonicalTemporary <- canonicalizePath temporary
   processId <- getProcessID
-  path <- freshDirectory temporary (label <> "-" <> show processId)
+  path <- freshDirectory canonicalTemporary (label <> "-" <> show processId)
   createDirectory path
   result <- try (action path) :: IO (Either SomeException a)
   _ <- try (removePathForcibly path) :: IO (Either SomeException ())
