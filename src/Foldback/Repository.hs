@@ -200,8 +200,12 @@ verifyRepository repository = do
   verifyObjectName name = do
     unless (validDigest name) (ioError (userError ("invalid object name: " <> name)))
     let path = repository </> "objects" </> name
-    isFile <- doesFileExist path
-    unless isFile (ioError (userError ("object is not a regular file: " <> name)))
+    statusResult <- tryIOError (Posix.getSymbolicLinkStatus path)
+    case statusResult of
+      Right status
+        | Posix.isRegularFile status && not (Posix.isSymbolicLink status) -> pure ()
+        | otherwise -> ioError (userError ("object is not a regular file: " <> name))
+      Left _ -> ioError (userError ("object is not a regular file: " <> name))
     actual <- hashFile path
     unless (unDigest actual == name) (ioError (userError ("corrupt object: " <> name)))
 
@@ -314,13 +318,16 @@ storeObject repository source = do
     hClose output
     let digest = Digest (hexEncode (SHA256.finalize context))
         destination = objectDirectory </> unDigest digest
-    exists <- doesFileExist destination
-    if exists
-      then do
-        existingDigest <- hashFile destination
-        unless (existingDigest == digest) (ioError (userError ("corrupt object: " <> destination)))
-        removeFile temporaryPath
-      else renameFile temporaryPath destination
+    destinationStatus <- tryIOError (Posix.getSymbolicLinkStatus destination)
+    case destinationStatus of
+      Right status
+        | Posix.isSymbolicLink status || not (Posix.isRegularFile status) ->
+            ioError (userError ("object is not a regular file: " <> unDigest digest))
+        | otherwise -> do
+            existingDigest <- hashFile destination
+            unless (existingDigest == digest) (ioError (userError ("corrupt object: " <> destination)))
+            removeFile temporaryPath
+      Left _ -> renameFile temporaryPath destination
     pure (digest, size)
 
 copyAndHash :: Handle -> SHA256.Ctx -> Integer -> Handle -> IO (SHA256.Ctx, Integer)
@@ -557,14 +564,19 @@ restoreEntry _ _ (Directory ".") = pure ()
 restoreEntry _ target (Directory path) = createDirectory (target </> path)
 restoreEntry repository target (RegularFile path expectedDigest expectedSize) = do
   let object = repository </> "objects" </> unDigest expectedDigest
-  exists <- doesFileExist object
-  unless exists (ioError (userError ("missing object: " <> unDigest expectedDigest)))
-  actualDigest <- hashFile object
-  unless (actualDigest == expectedDigest) (ioError (userError ("corrupt object: " <> unDigest expectedDigest)))
-  actualSize <- getFileSize object
-  unless (actualSize == expectedSize) (ioError (userError ("wrong object size: " <> unDigest expectedDigest)))
-  createDirectoryIfMissing True (takeDirectory (target </> path))
-  copyFile object (target </> path)
+  statusResult <- tryIOError (Posix.getSymbolicLinkStatus object)
+  case statusResult of
+    Left _ -> ioError (userError ("missing object: " <> unDigest expectedDigest))
+    Right status
+      | Posix.isSymbolicLink status || not (Posix.isRegularFile status) ->
+          ioError (userError ("object is not a regular file: " <> unDigest expectedDigest))
+      | otherwise -> do
+          actualDigest <- hashFile object
+          unless (actualDigest == expectedDigest) (ioError (userError ("corrupt object: " <> unDigest expectedDigest)))
+          actualSize <- getFileSize object
+          unless (actualSize == expectedSize) (ioError (userError ("wrong object size: " <> unDigest expectedDigest)))
+          createDirectoryIfMissing True (takeDirectory (target </> path))
+          copyFile object (target </> path)
 restoreEntry _ target (SymbolicLink path linkTarget) = do
   createDirectoryIfMissing True (takeDirectory (target </> path))
   Posix.createSymbolicLink linkTarget (target </> path)
