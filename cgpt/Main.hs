@@ -943,7 +943,7 @@ runNegativeChecks binary work = do
       , check
           "restore with --name"
           False
-          "unknown option: --name"
+          "--name is only valid for backup"
           ["restore", "x", work </> "target", "--repo", repository, "--name", "x"]
       , check "list positional" False "accepts no positional arguments" ["list", "--repo", repository, "extra"]
       , check "missing source" False "source is not a directory" ["backup", work </> "nope", "--repo", repository]
