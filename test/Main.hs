@@ -34,6 +34,7 @@ import System.Directory
   , listDirectory
   , removeFile
   , removePathForcibly
+  , renameFile
   , setCurrentDirectory
   )
 import System.Exit (ExitCode (..), exitFailure)
@@ -53,6 +54,7 @@ tests =
   , ("list and verify", testListAndVerify)
   , ("list and verify many snapshots", testListAndVerifyManySnapshots)
   , ("detect corruption", testDetectsCorruption)
+  , ("reject symlink content objects", testRejectsSymlinkedContentObject)
   , ("reject symlink source roots", testRejectsSymlinkSourceRoot)
   , ("reject optionlike snapshot name", testRejectsOptionlikeSnapshotName)
   , ("reject optionlike repository value", testRejectsOptionlikeRepositoryValue)
@@ -235,6 +237,73 @@ testDetectsCorruption = withTemporaryDirectory "foldback-corruption-test" $ \san
 
   verifyResult <- runExecutable ["verify", "--repo", repository]
   assertLeftContaining "verify identifies a corrupt content object" "corrupt object:" verifyResult
+
+testRejectsSymlinkedContentObject :: IO ()
+testRejectsSymlinkedContentObject = withTemporaryDirectory "foldback-symlink-object-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+      external = sandbox </> "external-object"
+      restored = sandbox </> "restored"
+  createDirectory source
+  writeFile (source </> "payload.txt") "object symlink payload"
+  _ <- runExecutable ["backup", source, "--repo", repository, "--name", "first"]
+
+  objectNames <- filter (not . isPrefixOf ".") <$> listDirectory (repository </> "objects")
+  objectName <- case objectNames of
+    [name] -> pure name
+    _ -> error "fixture should produce exactly one object"
+
+  let objectPath = repository </> "objects" </> objectName
+  renameFile objectPath external
+  createFileLink external objectPath
+
+  -- verify must reject symlinked content object
+  verifyResult <- runExecutable ["verify", "--repo", repository]
+  assertLeftContaining
+    "verify rejects a symlinked content object"
+    ("object is not a regular file: " <> objectName)
+    verifyResult
+
+  -- restore must refuse to read or copy through a symlinked content object
+  restoreResult <- runExecutable ["restore", "first", restored, "--repo", repository]
+  assertLeftContaining
+    "restore refuses a symlinked content object"
+    ("object is not a regular file: " <> objectName)
+    restoreResult
+  contents <- listDirectory restored
+  assertEqual "nothing was written through the symlinked object" (0 :: Int) (length contents)
+
+  -- backup must not accept or preserve an existing symlink in objects/
+  let secondSource = sandbox </> "second-source"
+  createDirectory secondSource
+  writeFile (secondSource </> "payload.txt") "object symlink payload"
+  backupResult <- runExecutable ["backup", secondSource, "--repo", repository, "--name", "second"]
+  assertLeftContaining
+    "backup rejects an existing symlink in objects"
+    ("object is not a regular file: " <> objectName)
+    backupResult
+  secondSnapshotExists <- doesPathExist (repository </> "snapshots" </> "second")
+  assertEqual "second snapshot was not committed" False secondSnapshotExists
+
+  -- dangling symlink in objects/ must also be rejected
+  removeFile external
+  danglingVerifyResult <- runExecutable ["verify", "--repo", repository]
+  assertLeftContaining
+    "verify rejects a dangling symlink content object"
+    ("object is not a regular file: " <> objectName)
+    danglingVerifyResult
+
+  danglingRestoreResult <- runExecutable ["restore", "first", restored, "--repo", repository]
+  assertLeftContaining
+    "restore refuses a dangling symlink content object"
+    ("object is not a regular file: " <> objectName)
+    danglingRestoreResult
+
+  danglingBackupResult <- runExecutable ["backup", secondSource, "--repo", repository, "--name", "second"]
+  assertLeftContaining
+    "backup rejects a dangling symlink in objects"
+    ("object is not a regular file: " <> objectName)
+    danglingBackupResult
 
 testRejectsSymlinkSourceRoot :: IO ()
 testRejectsSymlinkSourceRoot = withTemporaryDirectory "foldback-symlink-root-test" $ \sandbox -> do
