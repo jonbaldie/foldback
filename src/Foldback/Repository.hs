@@ -54,12 +54,14 @@ import System.FilePath
 import System.IO
   ( Handle
   , IOMode (ReadMode)
+  , SeekMode (AbsoluteSeek)
   , hClose
   , openBinaryTempFile
   , withBinaryFile
   )
-import System.IO.Error (tryIOError)
+import System.IO.Error (isAlreadyExistsError, tryIOError)
 import qualified System.Posix.Files as Posix
+import System.Posix.IO (LockRequest (WriteLock), closeFd, createFile, setLock)
 import Text.Read (readMaybe)
 
 data BackupReceipt = BackupReceipt
@@ -110,29 +112,30 @@ backup repository requestedName unnormalisedSource = do
   name <- maybe generatedSnapshotName pure requestedName
   validateCreatedSnapshotName name
   let snapshotPath = repository </> "snapshots" </> name
-  collision <- doesPathExist snapshotPath
-  when collision (ioError (userError ("snapshot already exists: " <> name)))
-  tree <- scanTree repository source "."
-  let summary = deriveManifest tree
-  createdAt <- floor <$> getPOSIXTime
-  let snapshot =
-        Snapshot
-          { snapshotFormat = 1
-          , snapshotName = name
-          , snapshotCreatedAt = createdAt
-          , snapshotEntries = entries summary
-          , snapshotFileCount = fileCount summary
-          , snapshotTotalBytes = totalBytes summary
-          }
-      digest = snapshotDigest snapshot
-  writeManifestDigest snapshotPath digest
-  writeSnapshot snapshotPath snapshot
-  pure
-    BackupReceipt
-      { receiptName = name
-      , receiptFileCount = fileCount summary
-      , receiptTotalBytes = totalBytes summary
-      }
+  withSnapshotNameReservation snapshotPath name $ do
+    collision <- doesPathExist snapshotPath
+    when collision (ioError (userError ("snapshot already exists: " <> name)))
+    tree <- scanTree repository source "."
+    let summary = deriveManifest tree
+    createdAt <- floor <$> getPOSIXTime
+    let snapshot =
+          Snapshot
+            { snapshotFormat = 1
+            , snapshotName = name
+            , snapshotCreatedAt = createdAt
+            , snapshotEntries = entries summary
+            , snapshotFileCount = fileCount summary
+            , snapshotTotalBytes = totalBytes summary
+            }
+        digest = snapshotDigest snapshot
+    writeManifestDigest snapshotPath digest
+    writeSnapshot snapshotPath snapshot
+    pure
+      BackupReceipt
+        { receiptName = name
+        , receiptFileCount = fileCount summary
+        , receiptTotalBytes = totalBytes summary
+        }
 
 restore :: FilePath -> String -> FilePath -> IO ()
 restore repository name unnormalisedTarget = do
@@ -243,6 +246,21 @@ validateSnapshotName name =
       && name /= "."
       && name /= ".."
       && all (\character -> isAlphaNum character || character `elem` ("._-" :: String)) name
+
+withSnapshotNameReservation :: FilePath -> String -> IO a -> IO a
+withSnapshotNameReservation snapshotPath name action =
+  bracket acquireLock releaseLock (const action)
+ where
+  lockPath = takeDirectory snapshotPath </> ("." <> name <> ".lock")
+  acquireLock = do
+    fd <- createFile lockPath 0o600
+    locked <- tryIOError (setLock fd (WriteLock, AbsoluteSeek, 0, 0))
+    case locked of
+      Left _ -> do
+        void (tryIOError (closeFd fd))
+        ioError (userError ("snapshot already exists: " <> name))
+      Right () -> pure fd
+  releaseLock fd = void (tryIOError (closeFd fd))
 
 -- Names are refused at creation time when no command could ever address them:
 -- the argument parser treats a leading dash as an option, so such a snapshot
@@ -355,7 +373,12 @@ writeSnapshot destination snapshot =
     (\(temporaryPath, handle) -> do
       ByteString.hPut handle (encodeSnapshot snapshot)
       hClose handle
-      renameFile temporaryPath destination
+      linked <- tryIOError (Posix.createLink temporaryPath destination)
+      case linked of
+        Left err | isAlreadyExistsError err ->
+          ioError (userError ("snapshot already exists: " <> snapshotName snapshot))
+        Left err -> ioError err
+        Right () -> removeFile temporaryPath
     )
 
 -- A manifest damaged in a well-formed way (e.g. a renamed entry path) passes
