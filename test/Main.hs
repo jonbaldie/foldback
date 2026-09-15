@@ -38,8 +38,8 @@ import System.Directory
   , setCurrentDirectory
   )
 import System.Exit (ExitCode (..), exitFailure)
-import System.FilePath ((</>))
-import System.IO (IOMode (WriteMode), hClose, openTempFile, withBinaryFile)
+import System.FilePath ((</>), takeFileName)
+import System.IO (IOMode (WriteMode), hClose, hPutStr, openBinaryTempFile, openTempFile, withBinaryFile)
 import System.Process (readProcessWithExitCode)
 
 main :: IO ()
@@ -68,6 +68,9 @@ tests =
   , ("bounds streaming memory", testBoundsStreamingMemory)
   , ("sidecar installed before manifest", testSidecarInstalledBeforeManifest)
   , ("tolerate incomplete snapshot leftovers", testIncompleteSnapshotTolerated)
+  , ("tolerate POSIX temp-file leftovers", testPosixTempFileLeftovers)
+  , ("retain committed POSIX-shaped snapshot names", testRetainCommittedPosixShapedSnapshotNames)
+  , ("reject unrelated invalid artifacts", testRejectsUnrelatedInvalidArtifacts)
   , ("atomic digest sidecar staging", testDigestSidecarAtomicStaging)
   , ("concurrent same snapshot name", testConcurrentSameSnapshotName)
   , ("reject symlink traversal order independent", testRejectsSymlinkTraversalOrderIndependent)
@@ -687,6 +690,82 @@ testIncompleteSnapshotTolerated = withTemporaryDirectory "foldback-incomplete-te
 
   verifyAfter <- runExecutable ["verify", "--repo", repository]
   assertEqual "verify reports both snapshots" (Right "verified 2 snapshots, 2 objects\n") verifyAfter
+
+testPosixTempFileLeftovers :: IO ()
+testPosixTempFileLeftovers = withTemporaryDirectory "foldback-posix-temp-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+  createDirectory source
+  writeFile (source </> "a.txt") "important data"
+  firstBackup <- runExecutable ["backup", source, "--repo", repository, "--name", "s1"]
+  assertEqual "initial backup succeeds" (Right "snapshot s1: 1 file, 14 bytes\n") firstBackup
+
+  objectTemp <- leaveTempFile (repository </> "objects") ".incoming-" "abandoned object"
+  snapshotTemp <- leaveTempFile (repository </> "snapshots") ".snapshot-" "abandoned snapshot"
+  digestTemp <- leaveTempFile (repository </> "snapshots") ".digest-" "abandoned digest"
+  assertBool "object temp file has the runtime POSIX shape" (not (isPrefixOf "." (takeFileName objectTemp)))
+  assertBool "snapshot temp file has the runtime POSIX shape" (not (isPrefixOf "." (takeFileName snapshotTemp)))
+  assertBool "digest temp file has the runtime POSIX shape" (not (isPrefixOf "." (takeFileName digestTemp)))
+
+  listResult <- runExecutable ["list", "--repo", repository]
+  assertEqual "list ignores POSIX temp-file leftovers" (Right "s1\t1 files\t14 bytes\n") listResult
+
+  verifyResult <- runExecutable ["verify", "--repo", repository]
+  assertEqual "verify ignores POSIX temp-file leftovers" (Right "verified 1 snapshots, 1 objects\n") verifyResult
+
+  writeFile (source </> "b.txt") "second snapshot"
+  secondBackup <- runExecutable ["backup", source, "--repo", repository, "--name", "s2"]
+  assertEqual "subsequent backup succeeds with POSIX temp-file leftovers" (Right "snapshot s2: 2 files, 29 bytes\n") secondBackup
+
+  listAfter <- runExecutable ["list", "--repo", repository]
+  assertEqual "list reports committed snapshots after POSIX leftovers" (Right "s1\t1 files\t14 bytes\ns2\t2 files\t29 bytes\n") listAfter
+
+  verifyAfter <- runExecutable ["verify", "--repo", repository]
+  assertEqual "verify reports committed snapshots after POSIX leftovers" (Right "verified 2 snapshots, 2 objects\n") verifyAfter
+ where
+  leaveTempFile directory template content = do
+    (path, handle) <- openBinaryTempFile directory template
+    hPutStr handle content
+    hClose handle
+    pure path
+
+testRetainCommittedPosixShapedSnapshotNames :: IO ()
+testRetainCommittedPosixShapedSnapshotNames = withTemporaryDirectory "foldback-posix-name-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+      snapshotName = "123-0.snapshot-"
+  createDirectory source
+  writeFile (source </> "a.txt") "important data"
+  backupResult <- runExecutable ["backup", source, "--repo", repository, "--name", snapshotName]
+  assertEqual "POSIX-shaped snapshot name can be committed" (Right "snapshot 123-0.snapshot-: 1 file, 14 bytes\n") backupResult
+
+  listResult <- runExecutable ["list", "--repo", repository]
+  assertEqual "committed POSIX-shaped snapshot remains listed" (Right "123-0.snapshot-\t1 files\t14 bytes\n") listResult
+
+  verifyResult <- runExecutable ["verify", "--repo", repository]
+  assertEqual "committed POSIX-shaped snapshot remains verifiable" (Right "verified 1 snapshots, 1 objects\n") verifyResult
+
+testRejectsUnrelatedInvalidArtifacts :: IO ()
+testRejectsUnrelatedInvalidArtifacts = do
+  withTemporaryDirectory "foldback-invalid-object-test" $ \sandbox -> do
+    let source = sandbox </> "source"
+        repository = sandbox </> "repository"
+    createDirectory source
+    writeFile (source </> "a.txt") "important data"
+    _ <- runExecutable ["backup", source, "--repo", repository, "--name", "s1"]
+    writeFile (repository </> "objects" </> "not-a-staging-name") "invalid object"
+    verifyResult <- runExecutable ["verify", "--repo", repository]
+    assertLeftContaining "verify rejects unrelated invalid object entries" "invalid object name: not-a-staging-name" verifyResult
+
+  withTemporaryDirectory "foldback-invalid-snapshot-test" $ \sandbox -> do
+    let source = sandbox </> "source"
+        repository = sandbox </> "repository"
+    createDirectory source
+    writeFile (source </> "a.txt") "important data"
+    _ <- runExecutable ["backup", source, "--repo", repository, "--name", "s1"]
+    writeFile (repository </> "snapshots" </> "not-a-staging-name") "invalid snapshot"
+    listResult <- runExecutable ["list", "--repo", repository]
+    assertLeftContaining "list rejects unrelated invalid snapshot entries" "invalid snapshot" listResult
 
 testDigestSidecarAtomicStaging :: IO ()
 testDigestSidecarAtomicStaging = withTemporaryDirectory "foldback-staging-test" $ \sandbox -> do

@@ -15,7 +15,7 @@ module Foldback.Repository
   ) where
 
 import Control.Exception (bracket)
-import Control.Monad (foldM, unless, void, when)
+import Control.Monad (filterM, foldM, unless, void, when)
 import qualified Crypto.Hash.SHA256 as SHA256
 import qualified Data.ByteString as ByteString
 import Data.Char (isAlphaNum, isDigit, isHexDigit, isLower)
@@ -154,9 +154,14 @@ restore repository name unnormalisedTarget = do
 listSnapshots :: FilePath -> IO [SnapshotInfo]
 listSnapshots repository = do
   ensureRepository repository
-  names <- sort . filter (not . isForeignArtifact) <$> listDirectory (repository </> "snapshots")
+  names <- sort <$> (filterM (shouldIncludeSnapshot repository) =<< listDirectory (repository </> "snapshots"))
   mapM loadInfo names
  where
+  shouldIncludeSnapshot repository name
+    | not (isForeignArtifact name) = pure True
+    | take 1 name == "." = pure False
+    | otherwise = hasCommittedSnapshotEvidence repository name
+
   loadInfo name = do
     validateSnapshotName name
     snapshot <- readNamedSnapshot repository name
@@ -278,9 +283,35 @@ validateCreatedSnapshotName name = do
     (ioError (userError "snapshot names may not begin with '-' or '.'"))
 
 -- Dotfiles and staging leftovers (".snapshot-", ".incoming-", ".digest-") in the live
--- directories are not repository artifacts; directory scans ignore them.
+-- directories are not repository artifacts; directory scans ignore them. On
+-- POSIX, openBinaryTempFile puts the unique pid/counter before the template,
+-- so those names arrive as e.g. "123-0.snapshot-" instead.
 isForeignArtifact :: String -> Bool
-isForeignArtifact name = take 1 name == "."
+isForeignArtifact name = take 1 name == "." || isPosixTemporaryName name
+
+isPosixTemporaryName :: String -> Bool
+isPosixTemporaryName name =
+  case span isDigit name of
+    (pid, '-' : rest)
+      | not (null pid) ->
+          case span isDigit rest of
+            (counter, '.' : template)
+              | not (null counter) ->
+                  any (`isPrefixOf` template) ["incoming-", "snapshot-", "digest-"]
+            _ -> False
+    _ -> False
+
+hasCommittedSnapshotEvidence :: FilePath -> String -> IO Bool
+hasCommittedSnapshotEvidence repository name = do
+  let manifestPath = repository </> "snapshots" </> name
+  sidecarExists <- doesFileExist (manifestDigestPath manifestPath)
+  if sidecarExists
+    then pure True
+    else do
+      parsed <- tryIOError (readSnapshot manifestPath)
+      pure $ case parsed of
+        Right snapshot -> snapshotName snapshot == name
+        Left _ -> False
 
 scanTree :: FilePath -> FilePath -> FilePath -> IO (Fix FsF)
 scanTree repository source relative = do
@@ -392,10 +423,10 @@ writeSnapshot destination snapshot =
 -- every structural check, so its serialized bytes are digested at commit time
 -- and re-checked whenever the record is read back. The sidecar lives beside
 -- the record under a dot name, which directory scans ignore as a non-artifact.
--- The digest sidecar is staged into a temporary dotfile (".digest-") and
+-- The digest sidecar is staged into a temporary file (".digest-") and
 -- atomically renamed before the snapshot manifest is published, guaranteeing
--- crash resiliency: an interrupted backup leaves only hidden artifacts that do
--- not corrupt repository listing or verification.
+-- crash resiliency: an interrupted backup leaves only artifacts that directory
+-- discovery recognizes as incomplete and excludes from listing or verification.
 writeManifestDigest :: FilePath -> Digest -> IO ()
 writeManifestDigest destination digest =
   bracket
