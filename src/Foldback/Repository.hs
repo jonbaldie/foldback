@@ -182,7 +182,8 @@ verifyRepository repository = do
   mapM_ verifyObjectName objectNames
   let expectedSizeSets = foldMap referencedObjects snapshots
   expectedObjects <- mapM uniqueExpectedSize (Map.toList expectedSizeSets)
-  mapM_ (verifyReference objectNames) expectedObjects
+  let objectNameSet = Set.fromList objectNames
+  mapM_ (verifyReference objectNameSet) expectedObjects
   pure
     Verification
       { verifiedSnapshots = length snapshots
@@ -215,8 +216,8 @@ verifyRepository repository = do
     actual <- hashFile path
     unless (unDigest actual == name) (ioError (userError ("corrupt object: " <> name)))
 
-  verifyReference objectNames (name, expectedSize) = do
-    unless (name `elem` objectNames) (ioError (userError ("missing object: " <> name)))
+  verifyReference objectNameSet (name, expectedSize) = do
+    unless (name `Set.member` objectNameSet) (ioError (userError ("missing object: " <> name)))
     actualSize <- getFileSize (repository </> "objects" </> name)
     unless (actualSize == expectedSize) (ioError (userError ("wrong object size: " <> name)))
 
