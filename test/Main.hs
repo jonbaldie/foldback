@@ -6,6 +6,7 @@ import Control.Monad (forM_, unless, when)
 import qualified Crypto.Hash.SHA256 as SHA256
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf, isPrefixOf)
+import GHC.Clock (getMonotonicTime)
 import qualified Data.ByteString as BS
 import qualified Data.Set as Set
 import Foldback.Algebra
@@ -75,6 +76,7 @@ tests =
   , ("concurrent same snapshot name", testConcurrentSameSnapshotName)
   , ("reject symlink traversal order independent", testRejectsSymlinkTraversalOrderIndependent)
   , ("reject incoherent directory trees", testRejectsIncoherentDirectoryTrees)
+  , ("path validation scales subquadratically", testPathValidationScalesSubquadratically)
   , ("help", testHelp)
   ]
 
@@ -1129,6 +1131,41 @@ withTemporaryDirectory template = bracket acquire cleanup
   cleanup path = do
     exists <- doesPathExist path
     if exists then removePathForcibly path else pure ()
+
+-- Validation runs on every list, restore, and verify, so its cost must grow
+-- with the manifest rather than with the square of it. Quadrupling a flat
+-- manifest costs ~16x under pairwise prefix scans and ~4-5x when each entry
+-- probes an index; the 8x bound separates the two without timing noise.
+testPathValidationScalesSubquadratically :: IO ()
+testPathValidationScalesSubquadratically = do
+  let dummyDigest = Digest (replicate 64 'a')
+      flatManifest count =
+        concat
+          [ [ RegularFile ("file-" <> show index) dummyDigest 1
+            , SymbolicLink ("link-" <> show index) "target"
+            ]
+          | index <- [1 .. count :: Int]
+          ]
+      timeValidation count = do
+        let manifest = flatManifest count
+        -- Force the manifest before timing so only validation is measured.
+        _ <- pure $! sum (map (length . entryPathOf) manifest)
+        samples <- traverse (const (timed (validatePaths manifest))) [1 .. 3 :: Int]
+        pure (minimum samples)
+      timed :: IO () -> IO Double
+      timed action = do
+        start <- getMonotonicTime
+        action
+        end <- getMonotonicTime
+        pure (end - start)
+      entryPathOf (Directory path) = path
+      entryPathOf (RegularFile path _ _) = path
+      entryPathOf (SymbolicLink path _) = path
+  small <- timeValidation 1000
+  large <- timeValidation 4000
+  assertBool
+    ("path validation grew " <> show (large / small) <> "x for 4x entries (" <> show small <> "s -> " <> show large <> "s)")
+    (large / small < 8)
 
 assertEqual :: (Eq a, Show a) => String -> a -> a -> IO ()
 assertEqual label expected actual

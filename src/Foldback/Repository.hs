@@ -46,6 +46,7 @@ import System.FilePath
   ( addTrailingPathSeparator
   , dropTrailingPathSeparator
   , isAbsolute
+  , isPathSeparator
   , normalise
   , splitDirectories
   , takeDirectory
@@ -509,15 +510,18 @@ validDigest digest =
 validatePaths :: [ManifestEntry] -> IO ()
 validatePaths manifestEntries = void (foldM validate (Set.empty, Set.singleton ".") manifestEntries)
  where
-  symlinks = [path | SymbolicLink path _ <- manifestEntries]
-  regularFiles = [path | RegularFile path _ _ <- manifestEntries]
+  -- Index each descent target by its separator-terminated form, the prefix
+  -- 'isPathPrefixOf' matches against, so each entry probes its own ancestor
+  -- prefixes instead of scanning every symlink and regular file.
+  symlinks = Set.fromList [addTrailingPathSeparator path | SymbolicLink path _ <- manifestEntries]
+  regularFiles = Set.fromList [addTrailingPathSeparator path | RegularFile path _ _ <- manifestEntries]
   validate (seen, establishedDirs) entry = do
     let path = entryPath entry
         parent = takeDirectory path
     unless (safeRelativePath path) (ioError (userError ("unsafe snapshot path: " <> path)))
     when (Set.member path seen) (ioError (userError ("duplicate snapshot path: " <> path)))
-    when (any (`isPathPrefixOf` path) symlinks) (ioError (userError ("path descends through a symlink: " <> path)))
-    when (any (`isPathPrefixOf` path) regularFiles) (ioError (userError ("path descends through a regular file: " <> path)))
+    when (any (`Set.member` symlinks) (separatorPrefixes path)) (ioError (userError ("path descends through a symlink: " <> path)))
+    when (any (`Set.member` regularFiles) (separatorPrefixes path)) (ioError (userError ("path descends through a regular file: " <> path)))
     unless (Set.member parent establishedDirs) (ioError (userError ("missing parent directory: " <> parent)))
     let nextEstablishedDirs = case entry of
           Directory dir -> Set.insert dir establishedDirs
@@ -539,6 +543,11 @@ safeRelativePath path =
 
 isPathPrefixOf :: FilePath -> FilePath -> Bool
 isPathPrefixOf parent child = addTrailingPathSeparator parent `isPrefixOf` child
+
+-- Every prefix of a path that ends in a separator: exactly the strings that
+-- can satisfy @addTrailingPathSeparator parent `isPrefixOf` path@.
+separatorPrefixes :: FilePath -> [FilePath]
+separatorPrefixes path = [take (index + 1) path | (index, character) <- zip [0 ..] path, isPathSeparator character]
 
 prepareTarget :: FilePath -> IO ()
 prepareTarget unnormalisedTarget = do
