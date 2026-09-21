@@ -5,6 +5,8 @@ module Foldback.Repository
   , Verification (..)
   , backup
   , listSnapshots
+  , loadCommittedSnapshot
+  , loadCommittedSnapshots
   , manifestDigestPath
   , restore
   , snapshotDigest
@@ -144,39 +146,57 @@ restore repository name unnormalisedTarget = do
   -- report the link's target and the symlink check below would pass. Drop it
   -- before inspecting the path; real directories with a slash are unaffected.
   let target = dropTrailingPathSeparator unnormalisedTarget
-  validateSnapshotName name
   ensureRepository repository
   ensureDisjoint "restore target must be outside the repository" repository target
-  snapshot <- readNamedSnapshot repository name
-  validateSnapshot snapshot
+  snapshot <- loadCommittedSnapshot repository name
   prepareTarget target
   void (foldM (restoreEntry repository target) Set.empty (snapshotEntries snapshot))
 
-listSnapshots :: FilePath -> IO [SnapshotInfo]
-listSnapshots repository = do
+-- The read side of a committed snapshot: name validation, manifest reading,
+-- digest cross-checks, and structural coherence all happen here and nowhere
+-- else. Every command that touches an existing snapshot loads it through
+-- this seam, so a format bump or a new validation changes one module once.
+loadCommittedSnapshot :: FilePath -> String -> IO Snapshot
+loadCommittedSnapshot repository name = do
+  validateSnapshotName name
+  snapshot <- readNamedSnapshot repository name
+  validateSnapshot snapshot
+  pure snapshot
+
+-- Discovery plus a single load of every committed snapshot. The loader owns
+-- directory scanning (foreign artifacts and POSIX temp-file leftovers stay
+-- unlisted), so each manifest is opened, hashed, and validated exactly once
+-- per run no matter which command needs it.
+loadCommittedSnapshots :: FilePath -> IO [(String, Snapshot)]
+loadCommittedSnapshots repository = do
   ensureRepository repository
-  names <- sort <$> (filterM (shouldIncludeSnapshot repository) =<< listDirectory (repository </> "snapshots"))
-  mapM loadInfo names
+  names <- sort <$> (filterM shouldIncludeSnapshot =<< listDirectory (repository </> "snapshots"))
+  traverse loadCommitted names
  where
-  shouldIncludeSnapshot repository name
+  shouldIncludeSnapshot name
     | not (isForeignArtifact name) = pure True
     | take 1 name == "." = pure False
     | otherwise = hasCommittedSnapshotEvidence repository name
 
-  loadInfo name = do
-    validateSnapshotName name
-    snapshot <- readNamedSnapshot repository name
-    validateSnapshot snapshot
-    pure
-      SnapshotInfo
+  loadCommitted name = do
+    snapshot <- loadCommittedSnapshot repository name
+    pure (name, snapshot)
+
+listSnapshots :: FilePath -> IO [SnapshotInfo]
+listSnapshots repository = do
+  snapshots <- loadCommittedSnapshots repository
+  pure
+    [ SnapshotInfo
         { infoName = name
         , infoFileCount = snapshotFileCount snapshot
         , infoTotalBytes = snapshotTotalBytes snapshot
         }
+    | (name, snapshot) <- snapshots
+    ]
 
 verifyRepository :: FilePath -> IO Verification
 verifyRepository repository = do
-  snapshots <- loadSnapshots
+  snapshots <- map snd <$> loadCommittedSnapshots repository
   objectNames <-
     sort . filter (not . isForeignArtifact) <$> listDirectory (repository </> "objects")
   mapM_ verifyObjectName objectNames
@@ -190,10 +210,6 @@ verifyRepository repository = do
       , verifiedObjects = length objectNames
       }
  where
-  loadSnapshots = do
-    infos <- listSnapshots repository
-    mapM (readNamedSnapshot repository . infoName) infos
-
   referencedObjects snapshot =
     Map.fromListWith Set.union
       [ (unDigest digest, Set.singleton size)
