@@ -150,7 +150,7 @@ restore repository name unnormalisedTarget = do
   snapshot <- readNamedSnapshot repository name
   validateSnapshot snapshot
   prepareTarget target
-  mapM_ (restoreEntry repository target) (snapshotEntries snapshot)
+  void (foldM (restoreEntry repository target) Set.empty (snapshotEntries snapshot))
 
 listSnapshots :: FilePath -> IO [SnapshotInfo]
 listSnapshots repository = do
@@ -356,10 +356,7 @@ storeObject repository source = do
       Right status
         | Posix.isSymbolicLink status || not (Posix.isRegularFile status) ->
             ioError (userError ("object is not a regular file: " <> unDigest digest))
-        | otherwise -> do
-            existingDigest <- hashFile destination
-            unless (existingDigest == digest) (ioError (userError ("corrupt object: " <> destination)))
-            removeFile temporaryPath
+        | otherwise -> removeFile temporaryPath
       Left _ -> renameFile temporaryPath destination
     pure (digest, size)
 
@@ -600,10 +597,12 @@ rejectSymlinkAncestors target = go (pathPrefixes target)
 pathPrefixes :: FilePath -> [FilePath]
 pathPrefixes path = drop 1 (scanl (</>) "" (splitDirectories path))
 
-restoreEntry :: FilePath -> FilePath -> ManifestEntry -> IO ()
-restoreEntry _ _ (Directory ".") = pure ()
-restoreEntry _ target (Directory path) = createDirectory (target </> path)
-restoreEntry repository target (RegularFile path expectedDigest expectedSize) = do
+restoreEntry :: FilePath -> FilePath -> Set.Set Digest -> ManifestEntry -> IO (Set.Set Digest)
+restoreEntry _ _ verified (Directory ".") = pure verified
+restoreEntry _ target verified (Directory path) = do
+  createDirectory (target </> path)
+  pure verified
+restoreEntry repository target verified (RegularFile path expectedDigest expectedSize) = do
   let object = repository </> "objects" </> unDigest expectedDigest
   statusResult <- tryIOError (Posix.getSymbolicLinkStatus object)
   case statusResult of
@@ -612,15 +611,18 @@ restoreEntry repository target (RegularFile path expectedDigest expectedSize) = 
       | Posix.isSymbolicLink status || not (Posix.isRegularFile status) ->
           ioError (userError ("object is not a regular file: " <> unDigest expectedDigest))
       | otherwise -> do
-          actualDigest <- hashFile object
-          unless (actualDigest == expectedDigest) (ioError (userError ("corrupt object: " <> unDigest expectedDigest)))
+          unless (Set.member expectedDigest verified) $ do
+            actualDigest <- hashFile object
+            unless (actualDigest == expectedDigest) (ioError (userError ("corrupt object: " <> unDigest expectedDigest)))
           actualSize <- getFileSize object
           unless (actualSize == expectedSize) (ioError (userError ("wrong object size: " <> unDigest expectedDigest)))
           createDirectoryIfMissing True (takeDirectory (target </> path))
           copyFile object (target </> path)
-restoreEntry _ target (SymbolicLink path linkTarget) = do
+          pure (Set.insert expectedDigest verified)
+restoreEntry _ target verified (SymbolicLink path linkTarget) = do
   createDirectoryIfMissing True (takeDirectory (target </> path))
   Posix.createSymbolicLink linkTarget (target </> path)
+  pure verified
 
 ensureDisjoint :: String -> FilePath -> FilePath -> IO ()
 ensureDisjoint problem first second = do
