@@ -1,5 +1,12 @@
 # Revision history for foldback
 
+## 0.1.2.0 -- 2026-09-22
+
+* Reduce memory use: stop per-entry re-hashing of deduplicated content, index
+  object names once in verify, and load each committed snapshot once behind a
+  read-side loader seam.
+* Harden manifest validation: index manifest descent checks in validatePaths.
+
 ## 0.1.1.0 -- 2026-09-20
 
 * Harden path, symlink, and restore safety: reject paths that descend through
