@@ -55,6 +55,11 @@ tests =
   , ("list and verify", testListAndVerify)
   , ("list and verify many snapshots", testListAndVerifyManySnapshots)
   , ("detect corruption", testDetectsCorruption)
+  , ("backup trusts content address on dedup hit", testBackupTrustsContentAddressOnDedupHit)
+  , ("hard links deduplicate and restore separately", testHardLinksDeduplicateAndRestoreSeparately)
+  , ("restore duplicate entries detect corrupt object", testRestoreDuplicateEntriesDetectsCorruptObject)
+  , ("restore duplicate entries detect missing object", testRestoreDuplicateEntriesDetectsMissingObject)
+  , ("restore duplicate entries detect wrong size", testRestoreDuplicateEntriesDetectsWrongSize)
   , ("reject symlink content objects", testRejectsSymlinkedContentObject)
   , ("reject symlink source roots", testRejectsSymlinkSourceRoot)
   , ("reject optionlike snapshot name", testRejectsOptionlikeSnapshotName)
@@ -242,6 +247,145 @@ testDetectsCorruption = withTemporaryDirectory "foldback-corruption-test" $ \san
 
   verifyResult <- runExecutable ["verify", "--repo", repository]
   assertLeftContaining "verify identifies a corrupt content object" "corrupt object:" verifyResult
+
+testBackupTrustsContentAddressOnDedupHit :: IO ()
+testBackupTrustsContentAddressOnDedupHit = withTemporaryDirectory "foldback-dedup-trust-test" $ \sandbox -> do
+  let firstSource = sandbox </> "first-source"
+      secondSource = sandbox </> "second-source"
+      repository = sandbox </> "repository"
+  createDirectory firstSource
+  createDirectory secondSource
+  writeFile (firstSource </> "payload.txt") "identical-body"
+  writeFile (secondSource </> "payload.txt") "identical-body"
+  firstBackup <- runExecutable ["backup", firstSource, "--repo", repository, "--name", "first"]
+  assertEqual "first backup stores the object" (Right "snapshot first: 1 file, 14 bytes\n") firstBackup
+
+  objectNames <- filter (not . isPrefixOf ".") <$> listDirectory (repository </> "objects")
+  objectName <- case objectNames of
+    [name] -> pure name
+    _ -> error "fixture should produce exactly one object"
+  writeFile (repository </> "objects" </> objectName) "damaged-not-matching-the-digest"
+
+  secondBackup <- runExecutable ["backup", secondSource, "--repo", repository, "--name", "second"]
+  assertEqual
+    "dedup hit trusts the content-addressed name and does not re-hash the stored object"
+    (Right "snapshot second: 1 file, 14 bytes\n")
+    secondBackup
+
+  remaining <- filter (not . isPrefixOf ".") <$> listDirectory (repository </> "objects")
+  assertEqual "still exactly one stored object after the dedup hit" [objectName] remaining
+  secondExists <- doesPathExist (repository </> "snapshots" </> "second")
+  assertEqual "second snapshot was committed" True secondExists
+
+  verifyResult <- runExecutable ["verify", "--repo", repository]
+  assertLeftContaining "verify still reports the corrupt stored object" ("corrupt object: " <> objectName) verifyResult
+
+testHardLinksDeduplicateAndRestoreSeparately :: IO ()
+testHardLinksDeduplicateAndRestoreSeparately = withTemporaryDirectory "foldback-hardlink-dedup-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+      restored = sandbox </> "restored"
+  createDirectory source
+  writeFile (source </> "original.txt") "shared-payload"
+  Posix.createLink (source </> "original.txt") (source </> "linked.txt")
+
+  backupResult <- runExecutable ["backup", source, "--repo", repository, "--name", "links"]
+  assertEqual "backup records hard links as separate entries" (Right "snapshot links: 2 files, 28 bytes\n") backupResult
+  objectNames <- filter (not . isPrefixOf ".") <$> listDirectory (repository </> "objects")
+  assertEqual "hard-linked content is stored once" (1 :: Int) (length objectNames)
+
+  restoreResult <- runExecutable ["restore", "links", restored, "--repo", repository]
+  assertRightContaining "restore of hard-linked entries succeeds" "restored links" restoreResult
+  original <- readFile (restored </> "original.txt")
+  linked <- readFile (restored </> "linked.txt")
+  assertEqual "restored original content" "shared-payload" original
+  assertEqual "restored linked content" "shared-payload" linked
+  originalStatus <- Posix.getFileStatus (restored </> "original.txt")
+  linkedStatus <- Posix.getFileStatus (restored </> "linked.txt")
+  assertBool "restored entries are separate files, not hard links" (Posix.fileID originalStatus /= Posix.fileID linkedStatus)
+
+testRestoreDuplicateEntriesDetectsCorruptObject :: IO ()
+testRestoreDuplicateEntriesDetectsCorruptObject = withTemporaryDirectory "foldback-restore-dup-corrupt-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+      restored = sandbox </> "restored"
+  createDirectory source
+  writeFile (source </> "a.txt") "shared"
+  writeFile (source </> "b.txt") "shared"
+  _ <- runExecutable ["backup", source, "--repo", repository, "--name", "dups"]
+  objectNames <- filter (not . isPrefixOf ".") <$> listDirectory (repository </> "objects")
+  objectName <- case objectNames of
+    [name] -> pure name
+    _ -> error "fixture should produce exactly one object"
+  writeFile (repository </> "objects" </> objectName) "damaged"
+
+  restoreResult <- runExecutable ["restore", "dups", restored, "--repo", repository]
+  assertLeftContaining
+    "restore reports a corrupt object for duplicate entries"
+    ("corrupt object: " <> objectName)
+    restoreResult
+
+testRestoreDuplicateEntriesDetectsMissingObject :: IO ()
+testRestoreDuplicateEntriesDetectsMissingObject = withTemporaryDirectory "foldback-restore-dup-missing-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+      restored = sandbox </> "restored"
+  createDirectory source
+  writeFile (source </> "a.txt") "shared"
+  writeFile (source </> "b.txt") "shared"
+  _ <- runExecutable ["backup", source, "--repo", repository, "--name", "dups"]
+  objectNames <- filter (not . isPrefixOf ".") <$> listDirectory (repository </> "objects")
+  objectName <- case objectNames of
+    [name] -> pure name
+    _ -> error "fixture should produce exactly one object"
+  removeFile (repository </> "objects" </> objectName)
+
+  restoreResult <- runExecutable ["restore", "dups", restored, "--repo", repository]
+  assertLeftContaining
+    "restore reports a missing object for duplicate entries"
+    ("missing object: " <> objectName)
+    restoreResult
+
+testRestoreDuplicateEntriesDetectsWrongSize :: IO ()
+testRestoreDuplicateEntriesDetectsWrongSize = withTemporaryDirectory "foldback-restore-dup-size-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+      restored = sandbox </> "restored"
+  createDirectory source
+  writeFile (source </> "a.txt") "shared"
+  writeFile (source </> "b.txt") "shared"
+  _ <- runExecutable ["backup", source, "--repo", repository, "--name", "dups"]
+
+  let manifestPath = repository </> "snapshots" </> "dups"
+  content <- readFile manifestPath
+  length content `seq` pure ()
+  let snapshot = read content :: Snapshot
+      bumpEntry (RegularFile "b.txt" digest size) = RegularFile "b.txt" digest (size + 1)
+      bumpEntry entry = entry
+      tweaked =
+        snapshot
+          { snapshotEntries = map bumpEntry (snapshotEntries snapshot)
+          , snapshotTotalBytes = snapshotTotalBytes snapshot + 1
+          }
+  removeFile manifestPath
+  removeFile (manifestDigestPath manifestPath)
+  writeSnapshot manifestPath tweaked
+  writeManifestDigest manifestPath (snapshotDigest tweaked)
+
+  objectNames <- filter (not . isPrefixOf ".") <$> listDirectory (repository </> "objects")
+  objectName <- case objectNames of
+    [name] -> pure name
+    _ -> error "fixture should produce exactly one object"
+
+  restoreResult <- runExecutable ["restore", "dups", restored, "--repo", repository]
+  assertLeftContaining
+    "restore still size-checks each duplicate entry"
+    ("wrong object size: " <> objectName)
+    restoreResult
+  restoredA <- readFile (restored </> "a.txt")
+  assertEqual "the first duplicate entry is restored before the size mismatch" "shared" restoredA
+  missingB <- doesPathExist (restored </> "b.txt")
+  assertEqual "the mismatched entry is not restored" False missingB
 
 testRejectsSymlinkedContentObject :: IO ()
 testRejectsSymlinkedContentObject = withTemporaryDirectory "foldback-symlink-object-test" $ \sandbox -> do
