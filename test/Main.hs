@@ -55,6 +55,8 @@ tests =
   , ("list and verify", testListAndVerify)
   , ("list and verify many snapshots", testListAndVerifyManySnapshots)
   , ("detect corruption", testDetectsCorruption)
+  , ("detect missing objects", testDetectsMissingObject)
+  , ("detect wrong object sizes", testDetectsWrongObjectSize)
   , ("backup trusts content address on dedup hit", testBackupTrustsContentAddressOnDedupHit)
   , ("hard links deduplicate and restore separately", testHardLinksDeduplicateAndRestoreSeparately)
   , ("restore duplicate entries detect corrupt object", testRestoreDuplicateEntriesDetectsCorruptObject)
@@ -223,12 +225,6 @@ testListAndVerifyManySnapshots = withTemporaryDirectory "foldback-many-snapshots
    where
     digits = show number
 
-  sha256Hex content = concatMap hexByte (BS.unpack (SHA256.hash (BS.pack (map (fromIntegral . fromEnum) content))))
-
-  hexByte byte = case showHex byte "" of
-    [digit] -> ['0', digit]
-    digits -> digits
-
   replaceFirst needle replacement content = case breakOnFirst needle content of
     Nothing -> error ("many-snapshot fixture could not find " <> show needle)
     Just (before, after) -> before <> replacement <> after
@@ -247,6 +243,49 @@ testDetectsCorruption = withTemporaryDirectory "foldback-corruption-test" $ \san
 
   verifyResult <- runExecutable ["verify", "--repo", repository]
   assertLeftContaining "verify identifies a corrupt content object" "corrupt object:" verifyResult
+
+testDetectsMissingObject :: IO ()
+testDetectsMissingObject = withTemporaryDirectory "foldback-missing-object-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+  createDirectory source
+  writeFile (source </> "kept.txt") "kept"
+  writeFile (source </> "lost.txt") "lost"
+  _ <- runExecutable ["backup", source, "--repo", repository, "--name", "before"]
+  let lostName = sha256Hex "lost"
+  removeFile (repository </> "objects" </> lostName)
+
+  verifyResult <- runExecutable ["verify", "--repo", repository]
+  assertLeftContaining "verify identifies a missing content object" ("missing object: " <> lostName) verifyResult
+
+testDetectsWrongObjectSize :: IO ()
+testDetectsWrongObjectSize = withTemporaryDirectory "foldback-wrong-size-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+  createDirectory source
+  _ <- runExecutable ["backup", source, "--repo", repository, "--name", "empty"]
+  -- The object is placed by hand so no other snapshot records its true size,
+  -- which would trip the conflicting-sizes check first.
+  let objectName = sha256Hex "intact"
+  writeFile (repository </> "objects" </> objectName) "intact"
+  let misSizedSnapshot =
+        Snapshot
+          { snapshotFormat = 1
+          , snapshotName = "mis-sized"
+          , snapshotCreatedAt = 1234567890
+          , snapshotFileCount = 1
+          , snapshotTotalBytes = 7
+          , snapshotEntries =
+              [ Directory "."
+              , RegularFile "valuable.txt" (Digest objectName) 7
+              ]
+          }
+      manifestPath = repository </> "snapshots" </> "mis-sized"
+  writeSnapshot manifestPath misSizedSnapshot
+  writeManifestDigest manifestPath (snapshotDigest misSizedSnapshot)
+
+  verifyResult <- runExecutable ["verify", "--repo", repository]
+  assertLeftContaining "verify identifies a wrongly sized content object" ("wrong object size: " <> objectName) verifyResult
 
 testBackupTrustsContentAddressOnDedupHit :: IO ()
 testBackupTrustsContentAddressOnDedupHit = withTemporaryDirectory "foldback-dedup-trust-test" $ \sandbox -> do
@@ -1256,6 +1295,13 @@ runExecutableWithDescriptorLimit limit arguments = do
   pure $ case exitCode of
     ExitSuccess -> Right standardOutput
     ExitFailure _ -> Left standardError
+
+sha256Hex :: String -> String
+sha256Hex content = concatMap hexByte (BS.unpack (SHA256.hash (BS.pack (map (fromIntegral . fromEnum) content))))
+ where
+  hexByte byte = case showHex byte "" of
+    [digit] -> ['0', digit]
+    digits -> digits
 
 withTemporaryDirectory :: String -> (FilePath -> IO a) -> IO a
 withTemporaryDirectory template = bracket acquire cleanup
