@@ -64,6 +64,7 @@ test-suite foldback-test
   type: exitcode-stdio-1.0
   hs-source-dirs: test
   main-is: Main.hs
+  other-modules: Properties
   build-tool-depends:
       foldback:foldback
   build-depends:
@@ -75,6 +76,7 @@ test-suite foldback-test
     , filepath >=1.4 && <1.6
     , foldback
     , process >=1.6 && <1.7
+    , QuickCheck >=2.14.3 && <2.17
     , unix >=2.7 && <2.9
 
 source-repository head
