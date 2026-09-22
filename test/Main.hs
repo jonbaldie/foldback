@@ -19,6 +19,7 @@ import Foldback.Repository
   , writeSnapshot
   )
 import Numeric (showHex)
+import Properties (propertyTests)
 import qualified System.Posix.Files as Posix
 import System.Directory
   ( canonicalizePath
@@ -85,6 +86,7 @@ tests =
   , ("reject incoherent directory trees", testRejectsIncoherentDirectoryTrees)
   , ("path validation scales subquadratically", testPathValidationScalesSubquadratically)
   , ("help", testHelp)
+  , ("property tests", propertyTests)
   ]
 
 runTest :: (String, IO ()) -> IO Bool
