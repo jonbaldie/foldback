@@ -259,7 +259,18 @@ validateRepositoryPath repository =
 writeFileIfMissing :: FilePath -> String -> IO ()
 writeFileIfMissing path content = do
   exists <- doesPathExist path
-  unless exists (writeFile path content)
+  unless exists $
+    bracket
+      (openBinaryTempFile (takeDirectory path) ".format-")
+      cleanupTemporaryFile
+      (\(temporaryPath, handle) -> do
+        ByteString.hPut handle (ByteString.pack (map (fromIntegral . fromEnum) content))
+        hClose handle
+        -- Backups can initialize one repository concurrently. Publish the
+        -- marker only after its complete contents are staged, so another
+        -- initializer never mistakes a partially written marker for a format.
+        renameFile temporaryPath path
+      )
 
 generatedSnapshotName :: IO String
 generatedSnapshotName = formatTime defaultTimeLocale "%Y%m%dT%H%M%S%qZ" <$> getCurrentTime
