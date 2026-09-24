@@ -1,5 +1,10 @@
 # Revision history for foldback
 
+## 0.1.3.0 -- 2026-09-22
+
+* Add QuickCheck property coverage for manifest totals, snapshot
+  serialization and digests, and coherent snapshot validation.
+
 ## 0.1.2.0 -- 2026-09-22
 
 * Reduce memory use: stop per-entry re-hashing of deduplicated content, index
