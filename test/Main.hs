@@ -71,6 +71,7 @@ tests =
   , ("reject symlink restore target ancestors", testRejectsSymlinkAncestorRestoreTarget)
   , ("reject empty restore target", testRejectsEmptyRestoreTarget)
   , ("reject empty repository path", testRejectsEmptyRepositoryPath)
+  , ("reject empty backup source", testRejectsEmptyBackupSource)
   , ("reject --name outside backup", testRejectsNameOutsideBackup)
   , ("tolerate foreign metadata files", testToleratesForeignMetadataFiles)
   , ("detect manifest tampering", testDetectsManifestTampering)
@@ -682,6 +683,20 @@ testRejectsEmptyRepositoryPath = withTemporaryDirectory "foldback-empty-reposito
   assertLeftContaining "backup rejects an empty repository path" "--repo cannot be empty" result
   contents <- listDirectory workingDirectory
   assertEqual "an empty repository path does not modify the working directory" (0 :: Int) (length contents)
+
+testRejectsEmptyBackupSource :: IO ()
+testRejectsEmptyBackupSource = withTemporaryDirectory "foldback-empty-source-test" $ \sandbox -> do
+  let repository = sandbox </> "repository"
+      workingDirectory = sandbox </> "work"
+  createDirectory workingDirectory
+  writeFile (workingDirectory </> "secret.txt") "sensitive data"
+
+  result <- bracket getCurrentDirectory setCurrentDirectory $ \_ -> do
+    setCurrentDirectory workingDirectory
+    runExecutable ["backup", "", "--repo", repository, "--name", "s1"]
+  assertLeftContaining "backup rejects an empty source path" "source cannot be empty" result
+  repositoryCreated <- doesPathExist repository
+  assertEqual "an empty source path does not create the repository" False repositoryCreated
 
 testRejectsNameOutsideBackup :: IO ()
 testRejectsNameOutsideBackup = withTemporaryDirectory "foldback-name-outside-backup-test" $ \sandbox -> do

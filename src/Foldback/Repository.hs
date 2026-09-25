@@ -99,6 +99,9 @@ data Snapshot = Snapshot
 
 backup :: FilePath -> Maybe String -> FilePath -> IO BackupReceipt
 backup repository requestedName unnormalisedSource = do
+  -- normalise "" is ".", so an empty source would silently snapshot the
+  -- working directory; refuse it before any path handling.
+  when (null unnormalisedSource) (ioError (userError "source cannot be empty"))
   -- A trailing separator resolves the final path component, so lstat would
   -- report the link's target and the symlink check below would pass. A
   -- trailing "." component does the same ("link/." lstats the link's target),
