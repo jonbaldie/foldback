@@ -1,5 +1,13 @@
 # Revision history for foldback
 
+## 0.1.4.0 -- 2026-09-25
+
+* Reject empty backup source paths up front before initializing or modifying
+  repositories.
+* Reject option-like values for `--name` in CLI argument parsing.
+* Validate snapshot names before repository initialization to avoid creating
+  empty repository structures on invalid names.
+
 ## 0.1.3.0 -- 2026-09-22
 
 * Add QuickCheck property coverage for manifest totals, snapshot
