@@ -112,6 +112,8 @@ parseArguments allowName = go [] Nothing Nothing
   go _ (Just _) _ ("--repo" : _ : _) = Left "--repo may only be supplied once"
   go _ _ _ ("--name" : _)
     | not allowName = Left "--name is only valid for backup"
+  go _ _ Nothing ("--name" : value : _)
+    | take 1 value == "-" = Left "--name requires a value"
   go positionals repository Nothing ("--name" : value : rest)
     | allowName = go positionals repository (Just value) rest
   go _ _ (Just _) ("--name" : _ : _)

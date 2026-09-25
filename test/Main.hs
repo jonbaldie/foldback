@@ -67,6 +67,7 @@ tests =
   , ("reject symlink source roots", testRejectsSymlinkSourceRoot)
   , ("reject optionlike snapshot name", testRejectsOptionlikeSnapshotName)
   , ("reject optionlike repository value", testRejectsOptionlikeRepositoryValue)
+  , ("reject optionlike name value", testRejectsOptionlikeNameValue)
   , ("reject symlink restore targets", testRejectsSymlinkRestoreTarget)
   , ("reject symlink restore target ancestors", testRejectsSymlinkAncestorRestoreTarget)
   , ("reject empty restore target", testRejectsEmptyRestoreTarget)
@@ -535,7 +536,9 @@ testRejectsOptionlikeSnapshotName = withTemporaryDirectory "foldback-optionlike-
   writeFile (source </> "a.txt") "data"
 
   dashNamed <- runExecutable ["backup", source, "--repo", repository, "--name", "-w"]
-  assertLeftContaining "backup refuses a leading-dash snapshot name" "snapshot name" dashNamed
+  assertLeftContaining "backup refuses a leading-dash snapshot name" "--name requires a value" dashNamed
+  dotNamed <- runExecutable ["backup", source, "--repo", repository, "--name", ".hidden"]
+  assertLeftContaining "backup refuses a leading-dot snapshot name" "snapshot name" dotNamed
   snapshotNames <- listDirectory (repository </> "snapshots")
   assertEqual "no snapshot is created for a refused name" (0 :: Int) (length snapshotNames)
 
@@ -564,6 +567,23 @@ testRejectsOptionlikeRepositoryValue = withTemporaryDirectory "foldback-optionli
   forM_ results (assertLeftContaining "--repo rejects an option-like value" "--repo requires a value")
   contents <- listDirectory workingDirectory
   assertEqual "an option-like repository value does not create a flag-named directory" (0 :: Int) (length contents)
+
+testRejectsOptionlikeNameValue :: IO ()
+testRejectsOptionlikeNameValue = withTemporaryDirectory "foldback-optionlike-name-value-test" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+      invalidArguments =
+        [ ["backup", source, "--name", "--repo", repository]
+        , ["backup", source, "--repo", repository, "--name", "--verbose"]
+        , ["backup", source, "--repo", repository, "--name", "-h"]
+        ]
+  createDirectory source
+  writeFile (source </> "a.txt") "data"
+
+  results <- traverse runExecutable invalidArguments
+  forM_ results (assertLeftContaining "--name rejects an option-like value" "--name requires a value")
+  repositoryExists <- doesDirectoryExist repository
+  assertEqual "an option-like name value does not create a repository" False repositoryExists
 
 testRejectsSymlinkRestoreTarget :: IO ()
 testRejectsSymlinkRestoreTarget = withTemporaryDirectory "foldback-symlink-target-test" $ \sandbox -> do
