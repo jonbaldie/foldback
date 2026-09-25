@@ -113,10 +113,10 @@ backup repository requestedName unnormalisedSource = do
   sourceStatus <- Posix.getSymbolicLinkStatus source
   when (Posix.isSymbolicLink sourceStatus) (ioError (userError ("source is not a directory: " <> source)))
   ensureDisjoint "repository must be outside the source tree" source repository
-  initializeRepository repository
-  ensureRepository repository
   name <- maybe generatedSnapshotName pure requestedName
   validateCreatedSnapshotName name
+  initializeRepository repository
+  ensureRepository repository
   let snapshotPath = repository </> "snapshots" </> name
   withSnapshotNameReservation snapshotPath name $ do
     collision <- doesPathExist snapshotPath

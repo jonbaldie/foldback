@@ -66,6 +66,7 @@ tests =
   , ("reject symlink content objects", testRejectsSymlinkedContentObject)
   , ("reject symlink source roots", testRejectsSymlinkSourceRoot)
   , ("reject optionlike snapshot name", testRejectsOptionlikeSnapshotName)
+  , ("reject invalid snapshot name before repository initialization", testRejectsInvalidSnapshotNameBeforeRepositoryInitialization)
   , ("reject optionlike repository value", testRejectsOptionlikeRepositoryValue)
   , ("reject optionlike name value", testRejectsOptionlikeNameValue)
   , ("reject symlink restore targets", testRejectsSymlinkRestoreTarget)
@@ -539,13 +540,43 @@ testRejectsOptionlikeSnapshotName = withTemporaryDirectory "foldback-optionlike-
   assertLeftContaining "backup refuses a leading-dash snapshot name" "--name requires a value" dashNamed
   dotNamed <- runExecutable ["backup", source, "--repo", repository, "--name", ".hidden"]
   assertLeftContaining "backup refuses a leading-dot snapshot name" "snapshot name" dotNamed
-  snapshotNames <- listDirectory (repository </> "snapshots")
-  assertEqual "no snapshot is created for a refused name" (0 :: Int) (length snapshotNames)
+  repositoryExists <- doesPathExist repository
+  assertEqual "refused names do not initialize a repository" False repositoryExists
 
   dashInside <- runExecutable ["backup", source, "--repo", repository, "--name", "my-backup"]
   assertEqual "dash inside the name is still accepted" (Right "snapshot my-backup: 1 file, 4 bytes\n") dashInside
   restoreResult <- runExecutable ["restore", "my-backup", sandbox </> "restored", "--repo", repository]
   assertRightContaining "dash-inside names restore cleanly" "restored my-backup" restoreResult
+
+testRejectsInvalidSnapshotNameBeforeRepositoryInitialization :: IO ()
+testRejectsInvalidSnapshotNameBeforeRepositoryInitialization =
+  withTemporaryDirectory "foldback-invalid-name-initialization-test" $ \sandbox -> do
+    let source = sandbox </> "source"
+        repository = sandbox </> "repository"
+        generatedRepository = sandbox </> "generated-repository"
+    createDirectory source
+
+    result <- runExecutable ["backup", source, "--repo", repository, "--name", " "]
+    assertLeftContaining
+      "backup rejects an invalid snapshot name"
+      "snapshot names may contain only letters, digits, '.', '_' and '-'"
+      result
+    repositoryExists <- doesPathExist repository
+    assertEqual
+      "an invalid snapshot name does not initialize a new repository"
+      False
+      repositoryExists
+
+    generatedResult <- runExecutable ["backup", source, "--repo", generatedRepository]
+    assertRightContaining
+      "backup accepts an automatically generated snapshot name"
+      "snapshot "
+      generatedResult
+    generatedRepositoryExists <- doesPathExist generatedRepository
+    assertEqual
+      "an automatically named backup initializes its repository"
+      True
+      generatedRepositoryExists
 
 testRejectsOptionlikeRepositoryValue :: IO ()
 testRejectsOptionlikeRepositoryValue = withTemporaryDirectory "foldback-optionlike-repo-test" $ \sandbox -> do
