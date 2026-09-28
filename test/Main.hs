@@ -156,29 +156,27 @@ testOpenRejectsUnsupportedFormat = withTemporaryDirectory "foldback-unsupported-
   createDirectory repositoryPath
   writeFile (repositoryPath </> "FORMAT") "foldback 2\n"
 
-  assertOpenFails "create-or-open rejects an unsupported marker" (createOrOpenRepository repositoryPath)
-  assertOpenFails "read open rejects an unsupported marker" (openRepository repositoryPath)
+  assertRepositoryOpenFails
+    "create-or-open rejects an unsupported marker"
+    "unsupported repository format"
+    (createOrOpenRepository repositoryPath)
+  assertRepositoryOpenFails
+    "read open rejects an unsupported marker"
+    "unsupported repository format"
+    (openRepository repositoryPath)
   marker <- readFile (repositoryPath </> "FORMAT")
   assertEqual "unsupported marker remains unchanged" "foldback 2\n" marker
- where
-  assertOpenFails label open = do
-    result <- try open :: IO (Either IOException Repository)
-    case result of
-      Left exception ->
-        assertBool label ("unsupported repository format" `isInfixOf` displayException exception)
-      Right _ -> error (label <> "\nexpected open to fail")
 
 testOpenRejectsEmptyPath :: IO ()
 testOpenRejectsEmptyPath = do
-  assertOpenFails "create-or-open rejects an empty repository path" (createOrOpenRepository "")
-  assertOpenFails "read open rejects an empty repository path" (openRepository "")
- where
-  assertOpenFails label open = do
-    result <- try open :: IO (Either IOException Repository)
-    case result of
-      Left exception ->
-        assertBool label ("--repo cannot be empty" `isInfixOf` displayException exception)
-      Right _ -> error (label <> "\nexpected open to fail")
+  assertRepositoryOpenFails
+    "create-or-open rejects an empty repository path"
+    "--repo cannot be empty"
+    (createOrOpenRepository "")
+  assertRepositoryOpenFails
+    "read open rejects an empty repository path"
+    "--repo cannot be empty"
+    (openRepository "")
 
 testDerivesManifest :: IO ()
 testDerivesManifest =
@@ -1509,6 +1507,14 @@ assertEqual label expected actual
 
 assertBool :: String -> Bool -> IO ()
 assertBool label condition = unless condition (error label)
+
+assertRepositoryOpenFails :: String -> String -> IO Repository -> IO ()
+assertRepositoryOpenFails label expectedMessage open = do
+  result <- try open :: IO (Either IOException Repository)
+  case result of
+    Left exception ->
+      assertBool label (expectedMessage `isInfixOf` displayException exception)
+    Right _ -> error (label <> "\nexpected open to fail")
 
 assertLeftContaining :: String -> String -> Either String a -> IO ()
 assertLeftContaining label expected result = case result of
