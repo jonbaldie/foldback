@@ -1,5 +1,10 @@
 # Revision history for foldback
 
+## 0.1.5.0 -- 2026-09-28
+
+* Add a documented exploratory CLI run covering backup, restore, deduplication,
+  symlink safety, and corruption detection.
+
 ## 0.1.4.0 -- 2026-09-25
 
 * Reject empty backup source paths up front before initializing or modifying
