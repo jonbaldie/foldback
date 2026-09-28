@@ -12,6 +12,7 @@ import Data.Word (Word8)
 import Foldback.Algebra
 import Foldback.Repository
   ( Snapshot (..)
+  , createOrOpenRepository
   , loadCommittedSnapshot
   , manifestDigestPath
   , snapshotDigest
@@ -486,14 +487,16 @@ rejectsCorruption corruption snapshot =
               counterexample "loadCommittedSnapshot accepted the corrupted snapshot" False
 
 probeCorruption :: Corruption -> Snapshot -> IO ()
-probeCorruption EmptyName _ = void (loadCommittedSnapshot "unused" "")
+probeCorruption EmptyName _ = withScratch $ \repositoryPath -> do
+  repository <- createOrOpenRepository repositoryPath
+  void (loadCommittedSnapshot repository "")
 probeCorruption _ snapshot = probeSnapshot snapshot
 
 probeSnapshot :: Snapshot -> IO ()
 probeSnapshot snapshot =
-  withScratch $ \repository -> do
-    createDirectory (repository </> "snapshots")
-    let manifestPath = repository </> "snapshots" </> snapshotName snapshot
+  withScratch $ \repositoryPath -> do
+    repository <- createOrOpenRepository repositoryPath
+    let manifestPath = repositoryPath </> "snapshots" </> snapshotName snapshot
     writeSnapshot manifestPath snapshot
     writeManifestDigest manifestPath (snapshotDigest snapshot)
     void (loadCommittedSnapshot repository (snapshotName snapshot))

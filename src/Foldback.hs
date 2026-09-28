@@ -8,8 +8,11 @@ import Foldback.Repository
   , SnapshotInfo (..)
   , Verification (..)
   , backup
+  , createOrOpenRepository
   , listSnapshots
+  , openRepository
   , restore
+  , validateBackupRequest
   , verifyRepository
   )
 import Data.Version (showVersion)
@@ -32,7 +35,9 @@ data Command
   | Version
 
 execute :: Command -> IO String
-execute (Backup repository source requestedName) = do
+execute (Backup repositoryPath source requestedName) = do
+  validateBackupRequest repositoryPath requestedName source
+  repository <- createOrOpenRepository repositoryPath
   receipt <- backup repository requestedName source
   let noun = if receiptFileCount receipt == 1 then "file" else "files"
   pure
@@ -46,10 +51,12 @@ execute (Backup repository source requestedName) = do
         <> show (receiptTotalBytes receipt)
         <> " bytes\n"
     )
-execute (Restore repository snapshot target) = do
+execute (Restore repositoryPath snapshot target) = do
+  repository <- openRepository repositoryPath
   restore repository snapshot target
   pure ("restored " <> snapshot <> " to " <> target <> "\n")
-execute (List repository) = do
+execute (List repositoryPath) = do
+  repository <- openRepository repositoryPath
   snapshots <- listSnapshots repository
   pure (concatMap renderSnapshot snapshots)
  where
@@ -60,7 +67,8 @@ execute (List repository) = do
       <> " files\t"
       <> show (infoTotalBytes snapshot)
       <> " bytes\n"
-execute (Verify repository) = do
+execute (Verify repositoryPath) = do
+  repository <- openRepository repositoryPath
   verification <- verifyRepository repository
   pure
     ( "verified "
