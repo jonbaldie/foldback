@@ -1,7 +1,7 @@
 module Main (main) where
 
 import Control.Concurrent (forkIO, killThread, newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (SomeException, bracket, displayException, try)
+import Control.Exception (IOException, SomeException, bracket, displayException, try)
 import Control.Monad (forM_, unless, when)
 import qualified Crypto.Hash.SHA256 as SHA256
 import Data.IORef (newIORef, readIORef, writeIORef)
@@ -11,8 +11,12 @@ import qualified Data.ByteString as BS
 import qualified Data.Set as Set
 import Foldback.Algebra
 import Foldback.Repository
-  ( Snapshot (..)
+  ( Repository
+  , Snapshot (..)
+  , createOrOpenRepository
+  , loadCommittedSnapshots
   , manifestDigestPath
+  , openRepository
   , snapshotDigest
   , validatePaths
   , writeManifestDigest
@@ -52,6 +56,10 @@ main = do
 tests :: [(String, IO ())]
 tests =
   [ ("derive manifest", testDerivesManifest)
+  , ("create-or-open repository writes the stable layout", testCreateOrOpenRepository)
+  , ("read open rejects snapshots-only repository without creating layout", testOpenRejectsSnapshotsOnlyRepository)
+  , ("both open modes reject unsupported format", testOpenRejectsUnsupportedFormat)
+  , ("both open modes reject an empty path", testOpenRejectsEmptyPath)
   , ("backup and restore", testBackupAndRestore)
   , ("list and verify", testListAndVerify)
   , ("list and verify many snapshots", testListAndVerifyManySnapshots)
@@ -102,6 +110,75 @@ runTest (name, action) = do
     Right () -> do
       putStrLn ("PASS " <> name)
       pure True
+
+testCreateOrOpenRepository :: IO ()
+testCreateOrOpenRepository = withTemporaryDirectory "foldback-create-open-test" $ \sandbox -> do
+  let repositoryPath = sandbox </> "repository"
+  repository <- createOrOpenRepository repositoryPath
+  format <- readFile (repositoryPath </> "FORMAT")
+  assertEqual "create-or-open writes the existing repository format marker" "foldback 1\n" format
+  objectsExist <- doesDirectoryExist (repositoryPath </> "objects")
+  snapshotsExist <- doesDirectoryExist (repositoryPath </> "snapshots")
+  assertEqual "create-or-open creates the objects directory" True objectsExist
+  assertEqual "create-or-open creates the snapshots directory" True snapshotsExist
+
+  openedRepository <- openRepository repositoryPath
+  snapshots <- loadCommittedSnapshots openedRepository
+  assertEqual "a newly opened repository has no snapshots" [] snapshots
+  -- Use the value returned by the create open too, proving both open paths
+  -- produce the same handle accepted by repository operations.
+  createdSnapshots <- loadCommittedSnapshots repository
+  assertEqual "the create open returns an operational repository handle" [] createdSnapshots
+
+testOpenRejectsSnapshotsOnlyRepository :: IO ()
+testOpenRejectsSnapshotsOnlyRepository = withTemporaryDirectory "foldback-snapshots-only-test" $ \sandbox -> do
+  let repositoryPath = sandbox </> "repository"
+  createDirectory repositoryPath
+  createDirectory (repositoryPath </> "snapshots")
+  writeFile (repositoryPath </> "snapshots" </> "unopened") "snapshot data"
+
+  openResult <- try (openRepository repositoryPath) :: IO (Either IOException Repository)
+  case openResult of
+    Left exception ->
+      assertBool
+        "read open reports a directory without FORMAT as not a repository"
+        ("not a foldback repository:" `isInfixOf` displayException exception)
+    Right _ -> error "read open accepted a snapshots-only directory"
+
+  formatExists <- doesFileExist (repositoryPath </> "FORMAT")
+  objectsExist <- doesDirectoryExist (repositoryPath </> "objects")
+  assertEqual "read open does not add a format marker" False formatExists
+  assertEqual "read open does not create the objects directory" False objectsExist
+
+testOpenRejectsUnsupportedFormat :: IO ()
+testOpenRejectsUnsupportedFormat = withTemporaryDirectory "foldback-unsupported-format-test" $ \sandbox -> do
+  let repositoryPath = sandbox </> "repository"
+  createDirectory repositoryPath
+  writeFile (repositoryPath </> "FORMAT") "foldback 2\n"
+
+  assertOpenFails "create-or-open rejects an unsupported marker" (createOrOpenRepository repositoryPath)
+  assertOpenFails "read open rejects an unsupported marker" (openRepository repositoryPath)
+  marker <- readFile (repositoryPath </> "FORMAT")
+  assertEqual "unsupported marker remains unchanged" "foldback 2\n" marker
+ where
+  assertOpenFails label open = do
+    result <- try open :: IO (Either IOException Repository)
+    case result of
+      Left exception ->
+        assertBool label ("unsupported repository format" `isInfixOf` displayException exception)
+      Right _ -> error (label <> "\nexpected open to fail")
+
+testOpenRejectsEmptyPath :: IO ()
+testOpenRejectsEmptyPath = do
+  assertOpenFails "create-or-open rejects an empty repository path" (createOrOpenRepository "")
+  assertOpenFails "read open rejects an empty repository path" (openRepository "")
+ where
+  assertOpenFails label open = do
+    result <- try open :: IO (Either IOException Repository)
+    case result of
+      Left exception ->
+        assertBool label ("--repo cannot be empty" `isInfixOf` displayException exception)
+      Right _ -> error (label <> "\nexpected open to fail")
 
 testDerivesManifest :: IO ()
 testDerivesManifest =

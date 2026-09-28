@@ -1,15 +1,19 @@
 module Foldback.Repository
   ( BackupReceipt (..)
+  , Repository
   , Snapshot (..)
   , SnapshotInfo (..)
   , Verification (..)
   , backup
+  , createOrOpenRepository
   , listSnapshots
   , loadCommittedSnapshot
   , loadCommittedSnapshots
   , manifestDigestPath
+  , openRepository
   , restore
   , snapshotDigest
+  , validateBackupRequest
   , validatePaths
   , verifyRepository
   , writeManifestDigest
@@ -97,27 +101,55 @@ data Snapshot = Snapshot
   }
   deriving stock (Eq, Read, Show)
 
-backup :: FilePath -> Maybe String -> FilePath -> IO BackupReceipt
+data Repository = Repository
+  { repositoryRoot :: FilePath
+  , objectsDirectory :: FilePath
+  , snapshotsDirectory :: FilePath
+  , formatPath :: FilePath
+  }
+
+repositoryFormat :: String
+repositoryFormat = "foldback 1\n"
+
+snapshotFormatVersion :: Int
+snapshotFormatVersion = 1
+
+createOrOpenRepository :: FilePath -> IO Repository
+createOrOpenRepository = openRepositoryWithInitialization True
+
+openRepository :: FilePath -> IO Repository
+openRepository = openRepositoryWithInitialization False
+
+openRepositoryWithInitialization :: Bool -> FilePath -> IO Repository
+openRepositoryWithInitialization initialize repositoryPath = do
+  validateRepositoryPath repositoryPath
+  let repository = repositoryAt repositoryPath
+  when initialize $ do
+    createDirectoryIfMissing True (objectsDirectory repository)
+    createDirectoryIfMissing True (snapshotsDirectory repository)
+    writeFileIfMissing (formatPath repository) repositoryFormat
+  formatExists <- doesFileExist (formatPath repository)
+  unless formatExists (ioError (userError ("not a foldback repository: " <> repositoryPath)))
+  format <- readStrictFile (formatPath repository)
+  unless (format == repositoryFormat) (ioError (userError "unsupported repository format"))
+  pure repository
+
+repositoryAt :: FilePath -> Repository
+repositoryAt repositoryPath =
+  Repository
+    { repositoryRoot = repositoryPath
+    , objectsDirectory = repositoryPath </> "objects"
+    , snapshotsDirectory = repositoryPath </> "snapshots"
+    , formatPath = repositoryPath </> "FORMAT"
+    }
+
+backup :: Repository -> Maybe String -> FilePath -> IO BackupReceipt
 backup repository requestedName unnormalisedSource = do
-  -- normalise "" is ".", so an empty source would silently snapshot the
-  -- working directory; refuse it before any path handling.
-  when (null unnormalisedSource) (ioError (userError "source cannot be empty"))
-  -- A trailing separator resolves the final path component, so lstat would
-  -- report the link's target and the symlink check below would pass. A
-  -- trailing "." component does the same ("link/." lstats the link's target),
-  -- so normalise the dot components away before dropping the separator;
-  -- real directories with a slash or dot suffix are unaffected.
-  let source = dropTrailingPathSeparator (normalise unnormalisedSource)
-  sourceExists <- doesDirectoryExist source
-  unless sourceExists (ioError (userError ("source is not a directory: " <> source)))
-  sourceStatus <- Posix.getSymbolicLinkStatus source
-  when (Posix.isSymbolicLink sourceStatus) (ioError (userError ("source is not a directory: " <> source)))
-  ensureDisjoint "repository must be outside the source tree" source repository
+  validateBackupRequest (repositoryRoot repository) requestedName unnormalisedSource
+  let source = normaliseBackupSource unnormalisedSource
   name <- maybe generatedSnapshotName pure requestedName
   validateCreatedSnapshotName name
-  initializeRepository repository
-  ensureRepository repository
-  let snapshotPath = repository </> "snapshots" </> name
+  let snapshotPath = snapshotsDirectory repository </> name
   withSnapshotNameReservation snapshotPath name $ do
     collision <- doesPathExist snapshotPath
     when collision (ioError (userError ("snapshot already exists: " <> name)))
@@ -126,7 +158,7 @@ backup repository requestedName unnormalisedSource = do
     createdAt <- floor <$> getPOSIXTime
     let snapshot =
           Snapshot
-            { snapshotFormat = 1
+            { snapshotFormat = snapshotFormatVersion
             , snapshotName = name
             , snapshotCreatedAt = createdAt
             , snapshotEntries = entries summary
@@ -143,14 +175,34 @@ backup repository requestedName unnormalisedSource = do
         , receiptTotalBytes = totalBytes summary
         }
 
-restore :: FilePath -> String -> FilePath -> IO ()
+validateBackupRequest :: FilePath -> Maybe String -> FilePath -> IO ()
+validateBackupRequest repositoryPath requestedName unnormalisedSource = do
+  -- normalise "" is ".", so an empty source would silently snapshot the
+  -- working directory; refuse it before any path handling.
+  when (null unnormalisedSource) (ioError (userError "source cannot be empty"))
+  -- A trailing separator resolves the final path component, so lstat would
+  -- report the link's target and the symlink check below would pass. A
+  -- trailing "." component does the same ("link/." lstats the link's target),
+  -- so normalise the dot components away before dropping the separator;
+  -- real directories with a slash or dot suffix are unaffected.
+  let source = normaliseBackupSource unnormalisedSource
+  sourceExists <- doesDirectoryExist source
+  unless sourceExists (ioError (userError ("source is not a directory: " <> source)))
+  sourceStatus <- Posix.getSymbolicLinkStatus source
+  when (Posix.isSymbolicLink sourceStatus) (ioError (userError ("source is not a directory: " <> source)))
+  ensureDisjoint "repository must be outside the source tree" source repositoryPath
+  maybe (pure ()) validateCreatedSnapshotName requestedName
+
+normaliseBackupSource :: FilePath -> FilePath
+normaliseBackupSource = dropTrailingPathSeparator . normalise
+
+restore :: Repository -> String -> FilePath -> IO ()
 restore repository name unnormalisedTarget = do
   -- A trailing separator resolves the final path component, so lstat would
   -- report the link's target and the symlink check below would pass. Drop it
   -- before inspecting the path; real directories with a slash are unaffected.
   let target = dropTrailingPathSeparator unnormalisedTarget
-  ensureRepository repository
-  ensureDisjoint "restore target must be outside the repository" repository target
+  ensureDisjoint "restore target must be outside the repository" (repositoryRoot repository) target
   snapshot <- loadCommittedSnapshot repository name
   prepareTarget target
   void (foldM (restoreEntry repository target) Set.empty (snapshotEntries snapshot))
@@ -159,7 +211,7 @@ restore repository name unnormalisedTarget = do
 -- digest cross-checks, and structural coherence all happen here and nowhere
 -- else. Every command that touches an existing snapshot loads it through
 -- this seam, so a format bump or a new validation changes one module once.
-loadCommittedSnapshot :: FilePath -> String -> IO Snapshot
+loadCommittedSnapshot :: Repository -> String -> IO Snapshot
 loadCommittedSnapshot repository name = do
   validateSnapshotName name
   snapshot <- readNamedSnapshot repository name
@@ -170,10 +222,9 @@ loadCommittedSnapshot repository name = do
 -- directory scanning (foreign artifacts and POSIX temp-file leftovers stay
 -- unlisted), so each manifest is opened, hashed, and validated exactly once
 -- per run no matter which command needs it.
-loadCommittedSnapshots :: FilePath -> IO [(String, Snapshot)]
+loadCommittedSnapshots :: Repository -> IO [(String, Snapshot)]
 loadCommittedSnapshots repository = do
-  ensureRepository repository
-  names <- sort <$> (filterM shouldIncludeSnapshot =<< listDirectory (repository </> "snapshots"))
+  names <- sort <$> (filterM shouldIncludeSnapshot =<< listDirectory (snapshotsDirectory repository))
   traverse loadCommitted names
  where
   shouldIncludeSnapshot name
@@ -185,7 +236,7 @@ loadCommittedSnapshots repository = do
     snapshot <- loadCommittedSnapshot repository name
     pure (name, snapshot)
 
-listSnapshots :: FilePath -> IO [SnapshotInfo]
+listSnapshots :: Repository -> IO [SnapshotInfo]
 listSnapshots repository = do
   snapshots <- loadCommittedSnapshots repository
   pure
@@ -197,11 +248,11 @@ listSnapshots repository = do
     | (name, snapshot) <- snapshots
     ]
 
-verifyRepository :: FilePath -> IO Verification
+verifyRepository :: Repository -> IO Verification
 verifyRepository repository = do
   snapshots <- map snd <$> loadCommittedSnapshots repository
   objectNames <-
-    sort . filter (not . isForeignArtifact) <$> listDirectory (repository </> "objects")
+    sort . filter (not . isForeignArtifact) <$> listDirectory (objectsDirectory repository)
   mapM_ verifyObjectName objectNames
   let expectedSizeSets = foldMap referencedObjects snapshots
   expectedObjects <- mapM uniqueExpectedSize (Map.toList expectedSizeSets)
@@ -225,7 +276,7 @@ verifyRepository repository = do
 
   verifyObjectName name = do
     unless (validDigest name) (ioError (userError ("invalid object name: " <> name)))
-    let path = repository </> "objects" </> name
+    let path = objectsDirectory repository </> name
     statusResult <- tryIOError (Posix.getSymbolicLinkStatus path)
     case statusResult of
       Right status
@@ -237,23 +288,8 @@ verifyRepository repository = do
 
   verifyReference objectNameSet (name, expectedSize) = do
     unless (name `Set.member` objectNameSet) (ioError (userError ("missing object: " <> name)))
-    actualSize <- getFileSize (repository </> "objects" </> name)
+    actualSize <- getFileSize (objectsDirectory repository </> name)
     unless (actualSize == expectedSize) (ioError (userError ("wrong object size: " <> name)))
-
-initializeRepository :: FilePath -> IO ()
-initializeRepository repository = do
-  validateRepositoryPath repository
-  createDirectoryIfMissing True (repository </> "objects")
-  createDirectoryIfMissing True (repository </> "snapshots")
-  writeFileIfMissing (repository </> "FORMAT") "foldback 1\n"
-
-ensureRepository :: FilePath -> IO ()
-ensureRepository repository = do
-  validateRepositoryPath repository
-  formatExists <- doesFileExist (repository </> "FORMAT")
-  unless formatExists (ioError (userError ("not a foldback repository: " <> repository)))
-  format <- readStrictFile (repository </> "FORMAT")
-  unless (format == "foldback 1\n") (ioError (userError "unsupported repository format"))
 
 validateRepositoryPath :: FilePath -> IO ()
 validateRepositoryPath repository =
@@ -333,9 +369,9 @@ isPosixTemporaryName name =
             _ -> False
     _ -> False
 
-hasCommittedSnapshotEvidence :: FilePath -> String -> IO Bool
+hasCommittedSnapshotEvidence :: Repository -> String -> IO Bool
 hasCommittedSnapshotEvidence repository name = do
-  let manifestPath = repository </> "snapshots" </> name
+  let manifestPath = snapshotsDirectory repository </> name
   sidecarExists <- doesFileExist (manifestDigestPath manifestPath)
   if sidecarExists
     then pure True
@@ -345,7 +381,7 @@ hasCommittedSnapshotEvidence repository name = do
         Right snapshot -> snapshotName snapshot == name
         Left _ -> False
 
-scanTree :: FilePath -> FilePath -> FilePath -> IO (Fix FsF)
+scanTree :: Repository -> FilePath -> FilePath -> IO (Fix FsF)
 scanTree repository source relative = do
   let absolute = if relative == "." then source else source </> relative
   status <- Posix.getSymbolicLinkStatus absolute
@@ -368,9 +404,9 @@ childPath :: FilePath -> FilePath -> FilePath
 childPath "." child = child
 childPath parent child = parent </> child
 
-storeObject :: FilePath -> FilePath -> IO (Digest, Integer)
+storeObject :: Repository -> FilePath -> IO (Digest, Integer)
 storeObject repository source = do
-  let temporaryDirectory = repository </> "objects"
+  let temporaryDirectory = objectsDirectory repository
   bracket
     (openBinaryTempFile temporaryDirectory ".incoming-")
     cleanupTemporaryFile
@@ -506,9 +542,9 @@ readSnapshot path = do
  where
   takeName = reverse . takeWhile (/= '/') . reverse
 
-readNamedSnapshot :: FilePath -> String -> IO Snapshot
+readNamedSnapshot :: Repository -> String -> IO Snapshot
 readNamedSnapshot repository name = do
-  let manifestPath = repository </> "snapshots" </> name
+  let manifestPath = snapshotsDirectory repository </> name
   snapshot <- readSnapshot manifestPath
   unless (snapshotName snapshot == name) (ioError (userError ("snapshot name does not match filename: " <> name)))
   expectedDigest <- readManifestDigest manifestPath
@@ -518,7 +554,7 @@ readNamedSnapshot repository name = do
 
 validateSnapshot :: Snapshot -> IO ()
 validateSnapshot snapshot = do
-  unless (snapshotFormat snapshot == 1) (ioError (userError "unsupported snapshot format"))
+  unless (snapshotFormat snapshot == snapshotFormatVersion) (ioError (userError "unsupported snapshot format"))
   unless (snapshotName snapshot /= "") (ioError (userError "invalid empty snapshot name"))
   case snapshotEntries snapshot of
     Directory "." : rest -> do
@@ -627,13 +663,13 @@ rejectSymlinkAncestors target = go (pathPrefixes target)
 pathPrefixes :: FilePath -> [FilePath]
 pathPrefixes path = drop 1 (scanl (</>) "" (splitDirectories path))
 
-restoreEntry :: FilePath -> FilePath -> Set.Set Digest -> ManifestEntry -> IO (Set.Set Digest)
+restoreEntry :: Repository -> FilePath -> Set.Set Digest -> ManifestEntry -> IO (Set.Set Digest)
 restoreEntry _ _ verified (Directory ".") = pure verified
 restoreEntry _ target verified (Directory path) = do
   createDirectory (target </> path)
   pure verified
 restoreEntry repository target verified (RegularFile path expectedDigest expectedSize) = do
-  let object = repository </> "objects" </> unDigest expectedDigest
+  let object = objectsDirectory repository </> unDigest expectedDigest
   statusResult <- tryIOError (Posix.getSymbolicLinkStatus object)
   case statusResult of
     Left _ -> ioError (userError ("missing object: " <> unDigest expectedDigest))
