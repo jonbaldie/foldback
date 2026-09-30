@@ -198,6 +198,9 @@ normaliseBackupSource = dropTrailingPathSeparator . normalise
 
 restore :: Repository -> String -> FilePath -> IO ()
 restore repository name unnormalisedTarget = do
+  -- Refuse an empty target before path resolution or snapshot loading can
+  -- produce a less useful error for this invalid argument.
+  when (null unnormalisedTarget) (ioError (userError "restore target cannot be empty"))
   -- A trailing separator resolves the final path component, so lstat would
   -- report the link's target and the symlink check below would pass. Drop it
   -- before inspecting the path; real directories with a slash are unaffected.

@@ -80,6 +80,7 @@ tests =
   , ("reject symlink restore targets", testRejectsSymlinkRestoreTarget)
   , ("reject symlink restore target ancestors", testRejectsSymlinkAncestorRestoreTarget)
   , ("reject empty restore target", testRejectsEmptyRestoreTarget)
+  , ("validate empty restore target before repository and snapshot checks", testValidatesEmptyRestoreTargetFirst)
   , ("reject empty repository path", testRejectsEmptyRepositoryPath)
   , ("reject empty backup source", testRejectsEmptyBackupSource)
   , ("reject --name outside backup", testRejectsNameOutsideBackup)
@@ -795,6 +796,28 @@ testRejectsEmptyRestoreTarget = withTemporaryDirectory "foldback-empty-target-te
   assertEqual "a matching local file survives an refused empty target" "precious-local" surviving
   untouched <- readFile (workingDirectory </> "other.txt")
   assertEqual "unrelated local files survive" "unrelated-local" untouched
+
+testValidatesEmptyRestoreTargetFirst :: IO ()
+testValidatesEmptyRestoreTargetFirst = withTemporaryDirectory "foldback-empty-target-order-test" $ \sandbox -> do
+  let workingDirectory = sandbox </> "work"
+      insideRepository = workingDirectory </> "repository"
+      outsideRepository = sandbox </> "outside-repository"
+      expected = Left "user error (restore target cannot be empty)\n"
+  createDirectory workingDirectory
+  _ <- createOrOpenRepository insideRepository
+  _ <- createOrOpenRepository outsideRepository
+
+  results <- bracket getCurrentDirectory setCurrentDirectory $ \_ -> do
+    setCurrentDirectory workingDirectory
+    insideResult <- runExecutable ["restore", "missing", "", "--repo", "repository"]
+    outsideResult <- runExecutable ["restore", "missing", "", "--repo", outsideRepository]
+    pure (insideResult, outsideResult)
+
+  let (insideResult, outsideResult) = results
+  assertEqual
+    "empty target beats repository disjointness and missing snapshot lookup"
+    (expected, expected)
+    (insideResult, outsideResult)
 
 testRejectsEmptyRepositoryPath :: IO ()
 testRejectsEmptyRepositoryPath = withTemporaryDirectory "foldback-empty-repository-test" $ \sandbox -> do
