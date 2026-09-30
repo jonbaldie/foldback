@@ -601,6 +601,7 @@ safeRelativePath :: FilePath -> Bool
 safeRelativePath path =
   path /= "."
     && not (null path)
+    && not (isPathSeparator (last path))
     && not (isAbsolute path)
     && normalise path == path
     && all (\part -> part /= ".." && part /= ".") (splitDirectories path)
