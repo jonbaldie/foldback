@@ -95,6 +95,7 @@ tests =
   , ("concurrent same snapshot name", testConcurrentSameSnapshotName)
   , ("reject symlink traversal order independent", testRejectsSymlinkTraversalOrderIndependent)
   , ("reject incoherent directory trees", testRejectsIncoherentDirectoryTrees)
+  , ("reject trailing-slash snapshot paths", testRejectsTrailingSlashSnapshotPaths)
   , ("path validation scales subquadratically", testPathValidationScalesSubquadratically)
   , ("help", testHelp)
   , ("property tests", propertyTests)
@@ -1417,6 +1418,45 @@ testRejectsIncoherentDirectoryTrees = do
 
     restoredExists3 <- doesPathExist restored
     assertBool "restore file-collision must fail upfront before creating target" (not restoredExists3)
+
+testRejectsTrailingSlashSnapshotPaths :: IO ()
+testRejectsTrailingSlashSnapshotPaths = do
+  let trailingSlashEntries = [Directory "folder", Directory "folder/"]
+  validationResult <- try (validatePaths trailingSlashEntries) :: IO (Either IOException ())
+  case validationResult of
+    Left exception ->
+      assertBool
+        "direct path validation reports a trailing-slash path as unsafe"
+        ("unsafe snapshot path: folder/" `isInfixOf` displayException exception)
+    Right () -> error "expected direct validation to reject a trailing-slash path"
+
+  withTemporaryDirectory "foldback-trailing-slash-test" $ \sandbox -> do
+    let repositoryPath = sandbox </> "repository"
+        restored = sandbox </> "restored"
+    _ <- createOrOpenRepository repositoryPath
+    let snapshot =
+          Snapshot
+            { snapshotFormat = 1
+            , snapshotName = "trailing-dir"
+            , snapshotCreatedAt = 1234567890
+            , snapshotFileCount = 0
+            , snapshotTotalBytes = 0
+            , snapshotEntries = Directory "." : trailingSlashEntries
+            }
+        manifestPath = repositoryPath </> "snapshots" </> "trailing-dir"
+    writeSnapshot manifestPath snapshot
+    writeManifestDigest manifestPath (snapshotDigest snapshot)
+
+    listResult <- runExecutable ["list", "--repo", repositoryPath]
+    assertLeftContaining "list rejects a trailing-slash path" "unsafe snapshot path: folder/" listResult
+
+    verifyResult <- runExecutable ["verify", "--repo", repositoryPath]
+    assertLeftContaining "verify rejects a trailing-slash path" "unsafe snapshot path: folder/" verifyResult
+
+    restoreResult <- runExecutable ["restore", "trailing-dir", restored, "--repo", repositoryPath]
+    assertLeftContaining "restore rejects a trailing-slash path" "unsafe snapshot path: folder/" restoreResult
+    restoredExists <- doesPathExist restored
+    assertEqual "restore rejects the manifest before creating its target" False restoredExists
 
 testHelp :: IO ()
 testHelp = do
