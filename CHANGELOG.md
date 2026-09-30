@@ -1,5 +1,13 @@
 # Revision history for foldback
 
+## 0.1.6.0 -- 2026-09-30
+
+* Open repositories behind an opaque `Repository` handle that owns the layout
+  and format version, rejecting missing or unsupported format markers.
+* Reject snapshot manifest paths with trailing separators in list, verify, and
+  restore.
+* Reject empty restore targets before repository and snapshot checks.
+
 ## 0.1.5.0 -- 2026-09-28
 
 * Add a documented exploratory CLI run covering backup, restore, deduplication,
