@@ -1,5 +1,10 @@
 # Revision history for foldback
 
+## 0.1.7.0 -- 2026-10-02
+
+* Reject repositories with missing or non-directory `snapshots/` or `objects/`
+  directories before opening a repository handle.
+
 ## 0.1.6.0 -- 2026-09-30
 
 * Open repositories behind an opaque `Repository` handle that owns the layout
