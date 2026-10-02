@@ -23,6 +23,7 @@ library
       Foldback
       Foldback.Algebra
       Foldback.Repository
+      Foldback.Staging
   other-modules:
       Paths_foldback
   build-depends:
