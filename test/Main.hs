@@ -46,7 +46,7 @@ import System.Directory
   )
 import System.Exit (ExitCode (..), exitFailure)
 import System.FilePath ((</>), takeDirectory, takeFileName)
-import System.IO (IOMode (WriteMode), hClose, hPutStr, openBinaryTempFile, openTempFile, withBinaryFile)
+import System.IO (IOMode (WriteMode), hClose, hPutStr, openTempFile, withBinaryFile)
 import System.Process (readProcessWithExitCode)
 
 main :: IO ()
@@ -92,7 +92,7 @@ tests =
   , ("sidecar installed before manifest", testSidecarInstalledBeforeManifest)
   , ("tolerate incomplete snapshot leftovers", testIncompleteSnapshotTolerated)
   , ("tolerate POSIX temp-file leftovers", testPosixTempFileLeftovers)
-  , ("interrupted staging leaves recognised leftovers", testInterruptedStagingLeavesRecognisedLeftovers)
+  , ("interrupted staging leaves recognized leftovers", testInterruptedStagingLeavesRecognizedLeftovers)
   , ("retain committed POSIX-shaped snapshot names", testRetainCommittedPosixShapedSnapshotNames)
   , ("reject unrelated invalid artifacts", testRejectsUnrelatedInvalidArtifacts)
   , ("atomic digest sidecar staging", testDigestSidecarAtomicStaging)
@@ -1101,16 +1101,16 @@ testPosixTempFileLeftovers = withTemporaryDirectory "foldback-posix-temp-test" $
   assertEqual "verify reports committed snapshots after POSIX leftovers" (Right "verified 2 snapshots, 2 objects\n") verifyAfter
 
 -- For every staging kind, a run interrupted before its publish step must
--- leave behind a name that discovery recognises, and nothing else; the name
+-- leave behind a name that discovery recognizes, and nothing else; the name
 -- comes from the production seam, never from a template copied into the test.
-testInterruptedStagingLeavesRecognisedLeftovers :: IO ()
-testInterruptedStagingLeavesRecognisedLeftovers = withTemporaryDirectory "foldback-staging-leftover-test" $ \sandbox -> do
+testInterruptedStagingLeavesRecognizedLeftovers :: IO ()
+testInterruptedStagingLeavesRecognizedLeftovers = withTemporaryDirectory "foldback-staging-leftover-test" $ \sandbox -> do
   forM_ [minBound .. maxBound :: Staging] $ \staging -> do
     let directory = sandbox </> show staging
     createDirectory directory
     leftover <- leaveStagingLeftover staging directory
     assertEqual ("the leftover lives in the staging directory for " <> show staging) directory (takeDirectory leftover)
-    assertBool ("discovery recognises the " <> show staging <> " leftover " <> show leftover) (isStagingLeftover (takeFileName leftover))
+    assertBool ("discovery recognizes the " <> show staging <> " leftover " <> show leftover) (isStagingLeftover (takeFileName leftover))
   forM_ committedNames $ \name ->
     assertBool ("committed artifact is not a staging leftover: " <> name) (not (isStagingLeftover name))
  where

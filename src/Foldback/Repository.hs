@@ -306,12 +306,11 @@ writeFileIfMissing :: FilePath -> String -> IO ()
 writeFileIfMissing path content = do
   exists <- doesPathExist path
   unless exists $
-    withStagedFile StagingFormat (takeDirectory path) (\handle -> ByteString.hPut handle (asciiBytes content)) $
-      \temporaryPath () ->
-        -- Backups can initialize one repository concurrently. Publish the
-        -- marker only after its complete contents are staged, so another
-        -- initializer never mistakes a partially written marker for a format.
-        renameFile temporaryPath path
+    withStagedBytes StagingFormat (takeDirectory path) (asciiBytes content) $ \temporaryPath ->
+      -- Backups can initialize one repository concurrently. Publish the
+      -- marker only after its complete contents are staged, so another
+      -- initializer never mistakes a partially written marker for a format.
+      renameFile temporaryPath path
 
 generatedSnapshotName :: IO String
 generatedSnapshotName = formatTime defaultTimeLocale "%Y%m%dT%H%M%S%qZ" <$> getCurrentTime
@@ -455,27 +454,30 @@ snapshotDigest snapshot = Digest (hexEncode (SHA256.hash (encodeSnapshot snapsho
 
 writeSnapshot :: FilePath -> Snapshot -> IO ()
 writeSnapshot destination snapshot =
-  withStagedFile StagingSnapshot (takeDirectory destination) (\handle -> ByteString.hPut handle (encodeSnapshot snapshot)) $
-    \temporaryPath () -> do
-      linked <- tryIOError (Posix.createLink temporaryPath destination)
-      case linked of
-        Left err | isAlreadyExistsError err ->
-          ioError (userError ("snapshot already exists: " <> snapshotName snapshot))
-        Left err -> ioError err
-        Right () -> removeFile temporaryPath
+  withStagedBytes StagingSnapshot (takeDirectory destination) (encodeSnapshot snapshot) $ \temporaryPath -> do
+    linked <- tryIOError (Posix.createLink temporaryPath destination)
+    case linked of
+      Left err | isAlreadyExistsError err ->
+        ioError (userError ("snapshot already exists: " <> snapshotName snapshot))
+      Left err -> ioError err
+      Right () -> removeFile temporaryPath
 
 -- A manifest damaged in a well-formed way (e.g. a renamed entry path) passes
 -- every structural check, so its serialized bytes are digested at commit time
 -- and re-checked whenever the record is read back. The sidecar lives beside
 -- the record under a dot name, which directory scans ignore as a non-artifact.
--- The digest sidecar is staged into a temporary file (StagingDigest) and
+-- The digest sidecar is staged into a temporary file (".digest-") and
 -- atomically renamed before the snapshot manifest is published, guaranteeing
 -- crash resiliency: an interrupted backup leaves only artifacts that directory
 -- discovery recognizes as incomplete and excludes from listing or verification.
 writeManifestDigest :: FilePath -> Digest -> IO ()
 writeManifestDigest destination digest =
-  withStagedFile StagingDigest (takeDirectory destination) (\handle -> ByteString.hPut handle (asciiBytes (unDigest digest <> "\n"))) $
-    \temporaryPath () -> renameFile temporaryPath (manifestDigestPath destination)
+  withStagedBytes StagingDigest (takeDirectory destination) (asciiBytes (unDigest digest <> "\n")) $ \temporaryPath ->
+    renameFile temporaryPath (manifestDigestPath destination)
+
+withStagedBytes :: Staging -> FilePath -> ByteString.ByteString -> (FilePath -> IO a) -> IO a
+withStagedBytes staging directory bytes publish =
+  withStagedFile staging directory (`ByteString.hPut` bytes) (\temporaryPath () -> publish temporaryPath)
 
 asciiBytes :: String -> ByteString.ByteString
 asciiBytes = ByteString.pack . map (fromIntegral . fromEnum)
