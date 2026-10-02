@@ -60,6 +60,7 @@ tests =
   , ("read open rejects snapshots-only repository without creating layout", testOpenRejectsSnapshotsOnlyRepository)
   , ("both open modes reject unsupported format", testOpenRejectsUnsupportedFormat)
   , ("both open modes reject an empty path", testOpenRejectsEmptyPath)
+  , ("read open rejects an incomplete repository layout", testOpenRejectsIncompleteLayout)
   , ("backup and restore", testBackupAndRestore)
   , ("list and verify", testListAndVerify)
   , ("list and verify many snapshots", testListAndVerifyManySnapshots)
@@ -168,6 +169,28 @@ testOpenRejectsUnsupportedFormat = withTemporaryDirectory "foldback-unsupported-
     (openRepository repositoryPath)
   marker <- readFile (repositoryPath </> "FORMAT")
   assertEqual "unsupported marker remains unchanged" "foldback 2\n" marker
+
+testOpenRejectsIncompleteLayout :: IO ()
+testOpenRejectsIncompleteLayout = withTemporaryDirectory "foldback-incomplete-layout-test" $ \sandbox -> do
+  let layouts =
+        [ ("missing snapshots and objects", [])
+        , ("missing objects", [("snapshots", True)])
+        , ("missing snapshots", [("objects", True)])
+        , ("snapshots is a file", [("snapshots", False), ("objects", True)])
+        , ("objects is a file", [("snapshots", True), ("objects", False)])
+        ]
+  forM_ (zip [0 :: Int ..] layouts) $ \(index, (label, entries)) -> do
+    let repositoryPath = sandbox </> ("repository-" <> show index)
+    createDirectory repositoryPath
+    writeFile (repositoryPath </> "FORMAT") "foldback 1\n"
+    forM_ entries $ \(name, isDirectory) ->
+      if isDirectory
+        then createDirectory (repositoryPath </> name)
+        else writeFile (repositoryPath </> name) ""
+    assertRepositoryOpenFails
+      ("read open rejects a repository with " <> label)
+      ("not a foldback repository: " <> repositoryPath)
+      (openRepository repositoryPath)
 
 testOpenRejectsEmptyPath :: IO ()
 testOpenRejectsEmptyPath = do

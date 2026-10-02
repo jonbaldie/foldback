@@ -132,6 +132,11 @@ openRepositoryWithInitialization initialize repositoryPath = do
   unless formatExists (ioError (userError ("not a foldback repository: " <> repositoryPath)))
   format <- readStrictFile (formatPath repository)
   unless (format == repositoryFormat) (ioError (userError "unsupported repository format"))
+  -- Repository operations list these directories directly, so a handle must
+  -- never be issued for a layout that is missing either of them.
+  objectsExist <- doesDirectoryExist (objectsDirectory repository)
+  snapshotsExist <- doesDirectoryExist (snapshotsDirectory repository)
+  unless (objectsExist && snapshotsExist) (ioError (userError ("not a foldback repository: " <> repositoryPath)))
   pure repository
 
 repositoryAt :: FilePath -> Repository
