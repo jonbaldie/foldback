@@ -22,6 +22,7 @@ import Foldback.Repository
   , writeManifestDigest
   , writeSnapshot
   )
+import Foldback.Staging (Staging (..), isStagingLeftover, withStagedFile)
 import Numeric (showHex)
 import Properties (propertyTests)
 import qualified System.Posix.Files as Posix
@@ -44,7 +45,7 @@ import System.Directory
   , setCurrentDirectory
   )
 import System.Exit (ExitCode (..), exitFailure)
-import System.FilePath ((</>), takeFileName)
+import System.FilePath ((</>), takeDirectory, takeFileName)
 import System.IO (IOMode (WriteMode), hClose, hPutStr, openBinaryTempFile, openTempFile, withBinaryFile)
 import System.Process (readProcessWithExitCode)
 
@@ -91,6 +92,7 @@ tests =
   , ("sidecar installed before manifest", testSidecarInstalledBeforeManifest)
   , ("tolerate incomplete snapshot leftovers", testIncompleteSnapshotTolerated)
   , ("tolerate POSIX temp-file leftovers", testPosixTempFileLeftovers)
+  , ("interrupted staging leaves recognised leftovers", testInterruptedStagingLeavesRecognisedLeftovers)
   , ("retain committed POSIX-shaped snapshot names", testRetainCommittedPosixShapedSnapshotNames)
   , ("reject unrelated invalid artifacts", testRejectsUnrelatedInvalidArtifacts)
   , ("atomic digest sidecar staging", testDigestSidecarAtomicStaging)
@@ -1075,9 +1077,9 @@ testPosixTempFileLeftovers = withTemporaryDirectory "foldback-posix-temp-test" $
   firstBackup <- runExecutable ["backup", source, "--repo", repository, "--name", "s1"]
   assertEqual "initial backup succeeds" (Right "snapshot s1: 1 file, 14 bytes\n") firstBackup
 
-  objectTemp <- leaveTempFile (repository </> "objects") ".incoming-" "abandoned object"
-  snapshotTemp <- leaveTempFile (repository </> "snapshots") ".snapshot-" "abandoned snapshot"
-  digestTemp <- leaveTempFile (repository </> "snapshots") ".digest-" "abandoned digest"
+  objectTemp <- leaveStagingLeftover StagingObject (repository </> "objects")
+  snapshotTemp <- leaveStagingLeftover StagingSnapshot (repository </> "snapshots")
+  digestTemp <- leaveStagingLeftover StagingDigest (repository </> "snapshots")
   assertBool "object temp file has the runtime POSIX shape" (not (isPrefixOf "." (takeFileName objectTemp)))
   assertBool "snapshot temp file has the runtime POSIX shape" (not (isPrefixOf "." (takeFileName snapshotTemp)))
   assertBool "digest temp file has the runtime POSIX shape" (not (isPrefixOf "." (takeFileName digestTemp)))
@@ -1097,12 +1099,28 @@ testPosixTempFileLeftovers = withTemporaryDirectory "foldback-posix-temp-test" $
 
   verifyAfter <- runExecutable ["verify", "--repo", repository]
   assertEqual "verify reports committed snapshots after POSIX leftovers" (Right "verified 2 snapshots, 2 objects\n") verifyAfter
+
+-- For every staging kind, a run interrupted before its publish step must
+-- leave behind a name that discovery recognises, and nothing else; the name
+-- comes from the production seam, never from a template copied into the test.
+testInterruptedStagingLeavesRecognisedLeftovers :: IO ()
+testInterruptedStagingLeavesRecognisedLeftovers = withTemporaryDirectory "foldback-staging-leftover-test" $ \sandbox -> do
+  forM_ [minBound .. maxBound :: Staging] $ \staging -> do
+    let directory = sandbox </> show staging
+    createDirectory directory
+    leftover <- leaveStagingLeftover staging directory
+    assertEqual ("the leftover lives in the staging directory for " <> show staging) directory (takeDirectory leftover)
+    assertBool ("discovery recognises the " <> show staging <> " leftover " <> show leftover) (isStagingLeftover (takeFileName leftover))
+  forM_ committedNames $ \name ->
+    assertBool ("committed artifact is not a staging leftover: " <> name) (not (isStagingLeftover name))
  where
-  leaveTempFile directory template content = do
-    (path, handle) <- openBinaryTempFile directory template
-    hPutStr handle content
-    hClose handle
-    pure path
+  committedNames =
+    [ "s1"
+    , "FORMAT"
+    , "not-a-staging-name"
+    , ".s1.digest"
+    , "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    ]
 
 testRetainCommittedPosixShapedSnapshotNames :: IO ()
 testRetainCommittedPosixShapedSnapshotNames = withTemporaryDirectory "foldback-posix-name-test" $ \sandbox -> do
@@ -1160,7 +1178,7 @@ testDigestSidecarAtomicStaging = withTemporaryDirectory "foldback-staging-test" 
 
   -- Verify no leftover staging temporary files
   entriesAfterInitial <- listDirectory snapshotsDir
-  let stagingFiles = filter (\name -> ".digest-" `isPrefixOf` name) entriesAfterInitial
+  let stagingFiles = filter isStagingLeftover entriesAfterInitial
   assertEqual "no staging temp files remain after successful write" ([] :: [String]) stagingFiles
 
   -- 2. writeManifestDigest atomically updates an existing sidecar with a new inode
@@ -1172,7 +1190,7 @@ testDigestSidecarAtomicStaging = withTemporaryDirectory "foldback-staging-test" 
   assertBool "atomic staging via rename allocates a new inode" (initialInode /= updatedInode)
 
   entriesAfterUpdate <- listDirectory snapshotsDir
-  assertEqual "no staging temp files remain after atomic update" ([] :: [String]) (filter (\name -> ".digest-" `isPrefixOf` name) entriesAfterUpdate)
+  assertEqual "no staging temp files remain after atomic update" ([] :: [String]) (filter isStagingLeftover entriesAfterUpdate)
 
 testConcurrentSameSnapshotName :: IO ()
 testConcurrentSameSnapshotName = withTemporaryDirectory "foldback-concurrent-name-test" $ \sandbox ->
@@ -1585,6 +1603,30 @@ testPathValidationScalesSubquadratically = do
   assertBool
     ("path validation grew " <> show (large / small) <> "x for 4x entries (" <> show small <> "s -> " <> show large <> "s)")
     (large / small < 8)
+
+-- Run the production staging seam with a publish step that fails, as an
+-- interrupted writer would, and recreate the temporary file it cleaned up so
+-- the directory holds exactly the name a killed process would have left.
+leaveStagingLeftover :: Staging -> FilePath -> IO FilePath
+leaveStagingLeftover staging directory = do
+  pathRef <- newIORef Nothing
+  result <-
+    try
+      ( withStagedFile staging directory (\handle -> hPutStr handle "abandoned staging file") $ \temporaryPath () -> do
+          writeIORef pathRef (Just temporaryPath)
+          ioError (userError "interrupted before publish")
+      )
+  case result :: Either IOException () of
+    Left _ -> pure ()
+    Right () -> error "staging publish step unexpectedly succeeded"
+  captured <- readIORef pathRef
+  case captured of
+    Nothing -> error ("staging never reached its publish step for " <> show staging)
+    Just path -> do
+      cleanedUp <- not <$> doesPathExist path
+      assertBool ("staging cleans up its temporary file after a failed publish: " <> path) cleanedUp
+      writeFile path "abandoned staging file"
+      pure path
 
 assertEqual :: (Eq a, Show a) => String -> a -> a -> IO ()
 assertEqual label expected actual
