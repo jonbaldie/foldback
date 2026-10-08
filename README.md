@@ -81,6 +81,8 @@ Run `foldback --help` for the full command summary.
 
 ## Testing
 
+Run these commands in the capped development container that [AGENTS.md](AGENTS.md#development-container) describes, prefixed with `docker exec "$name"`.
+
 Run the integration and regression test suite:
 
 ```sh
