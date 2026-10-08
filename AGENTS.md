@@ -67,5 +67,5 @@ The image uses GHC 9.12.2; CI uses GHC 9.12.1. Remove the container with
 
 - Respect the host's storage. Before you finish, remove the development
   container (`docker rm -f "$name"`), delete build output from the checkout
-  (`rm -rf dist-newstyle dist-cov`), and remove replaced development images
-  (`docker image prune -f --filter label=dev-image=foldback`).
+  (`rm -rf dist-newstyle dist-cov`), and remove the development image
+  (`docker image prune -a -f --filter label=dev-image=foldback`).
