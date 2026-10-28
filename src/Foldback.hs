@@ -8,11 +8,9 @@ import Foldback.Repository
   , SnapshotInfo (..)
   , Verification (..)
   , backup
-  , createOrOpenRepository
   , listSnapshots
   , openRepository
   , restore
-  , validateBackupRequest
   , verifyRepository
   )
 import Data.Version (showVersion)
@@ -36,9 +34,7 @@ data Command
 
 execute :: Command -> IO String
 execute (Backup repositoryPath source requestedName) = do
-  validateBackupRequest repositoryPath requestedName source
-  repository <- createOrOpenRepository repositoryPath
-  receipt <- backup repository requestedName source
+  receipt <- backup repositoryPath requestedName source
   let noun = if receiptFileCount receipt == 1 then "file" else "files"
   pure
     ( "snapshot "

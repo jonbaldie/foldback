@@ -11,8 +11,10 @@ import qualified Data.ByteString as BS
 import qualified Data.Set as Set
 import Foldback.Algebra
 import Foldback.Repository
-  ( Repository
+  ( BackupReceipt (..)
+  , Repository
   , Snapshot (..)
+  , backup
   , createOrOpenRepository
   , loadCommittedSnapshots
   , manifestDigestPath
@@ -61,6 +63,7 @@ tests =
   , ("both open modes reject unsupported format", testOpenRejectsUnsupportedFormat)
   , ("both open modes reject an empty path", testOpenRejectsEmptyPath)
   , ("read open rejects an incomplete repository layout", testOpenRejectsIncompleteLayout)
+  , ("library backup prepares before repository creation", testLibraryBackupPreparation)
   , ("backup and restore", testBackupAndRestore)
   , ("list and verify", testListAndVerify)
   , ("list and verify many snapshots", testListAndVerifyManySnapshots)
@@ -113,6 +116,24 @@ runTest (name, action) = do
     Right () -> do
       putStrLn ("PASS " <> name)
       pure True
+
+testLibraryBackupPreparation :: IO ()
+testLibraryBackupPreparation = withTemporaryDirectory "foldback-library-backup" $ \sandbox -> do
+  let repositoryPath = sandbox </> "repository"
+      source = sandbox </> "source"
+  createDirectory source
+  forM_ [(Just "-bad", source), (Nothing, sandbox </> "missing")] $ \(name, path) -> do
+    result <- try (backup repositoryPath name path) :: IO (Either IOException BackupReceipt)
+    case result of
+      Left _ -> pure ()
+      Right _ -> fail "invalid backup request was accepted"
+    exists <- doesPathExist repositoryPath
+    assertEqual "invalid request does not initialize repository" False exists
+  writeFile (source </> "file") "hello"
+  receipt <- backup repositoryPath (Just "first") source
+  assertEqual "backup receipt" (BackupReceipt "first" 1 5) receipt
+  existsAfter <- doesDirectoryExist repositoryPath
+  assertEqual "backup initializes repository" True existsAfter
 
 testCreateOrOpenRepository :: IO ()
 testCreateOrOpenRepository = withTemporaryDirectory "foldback-create-open-test" $ \sandbox -> do
