@@ -13,7 +13,6 @@ module Foldback.Repository
   , openRepository
   , restore
   , snapshotDigest
-  , validateBackupRequest
   , validatePaths
   , verifyRepository
   , writeManifestDigest
@@ -148,12 +147,16 @@ repositoryAt repositoryPath =
     , formatPath = repositoryPath </> "FORMAT"
     }
 
-backup :: Repository -> Maybe String -> FilePath -> IO BackupReceipt
-backup repository requestedName unnormalisedSource = do
-  validateBackupRequest (repositoryRoot repository) requestedName unnormalisedSource
-  let source = normaliseBackupSource unnormalisedSource
-  name <- maybe generatedSnapshotName pure requestedName
-  validateCreatedSnapshotName name
+backup :: FilePath -> Maybe String -> FilePath -> IO BackupReceipt
+backup repositoryPath requestedName unnormalisedSource = do
+  source <- validateBackupRequest repositoryPath requestedName unnormalisedSource
+  repository <- createOrOpenRepository repositoryPath
+  name <- case requestedName of
+    Just validName -> pure validName
+    Nothing -> do
+      generated <- generatedSnapshotName
+      validateCreatedSnapshotName generated
+      pure generated
   let snapshotPath = snapshotsDirectory repository </> name
   withSnapshotNameReservation snapshotPath name $ do
     collision <- doesPathExist snapshotPath
@@ -180,7 +183,7 @@ backup repository requestedName unnormalisedSource = do
         , receiptTotalBytes = totalBytes summary
         }
 
-validateBackupRequest :: FilePath -> Maybe String -> FilePath -> IO ()
+validateBackupRequest :: FilePath -> Maybe String -> FilePath -> IO FilePath
 validateBackupRequest repositoryPath requestedName unnormalisedSource = do
   -- normalise "" is ".", so an empty source would silently snapshot the
   -- working directory; refuse it before any path handling.
@@ -197,6 +200,8 @@ validateBackupRequest repositoryPath requestedName unnormalisedSource = do
   when (Posix.isSymbolicLink sourceStatus) (ioError (userError ("source is not a directory: " <> source)))
   ensureDisjoint "repository must be outside the source tree" source repositoryPath
   maybe (pure ()) validateCreatedSnapshotName requestedName
+  validateRepositoryPath repositoryPath
+  pure source
 
 normaliseBackupSource :: FilePath -> FilePath
 normaliseBackupSource = dropTrailingPathSeparator . normalise
