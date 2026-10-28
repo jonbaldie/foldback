@@ -1,5 +1,10 @@
 # Revision history for foldback
 
+## 0.1.8.0 -- 2026-10-28
+
+* Validate backup arguments and source before opening the repository, so invalid
+  input is reported even when the repository is missing or invalid.
+
 ## 0.1.7.0 -- 2026-10-02
 
 * Reject repositories with missing or non-directory `snapshots/` or `objects/`
