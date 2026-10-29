@@ -1,0 +1,51 @@
+Configuration is affected by the following files:
+- cabal.project
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback backup /workspace/.explore-data/src --repo /workspace/.explore-data/repo --name first
+snapshot first: 2 files, 12 bytes
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback list --repo /workspace/.explore-data/repo
+first	2 files	12 bytes
++ find /workspace/.explore-data/repo/objects -type f
++ wc -l
+1
++ printf 'changed\n'
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback backup /workspace/.explore-data/src --repo /workspace/.explore-data/repo --name second
+snapshot second: 2 files, 14 bytes
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback list --repo /workspace/.explore-data/repo
+first	2 files	12 bytes
+second	2 files	14 bytes
++ find /workspace/.explore-data/repo/objects -type f
++ wc -l
+2
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback backup /workspace/.explore-data/src --repo /workspace/.explore-data/repo --name first
+user error (snapshot already exists: first)
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback restore first /workspace/.explore-data/restored --repo /workspace/.explore-data/repo
+restored first to /workspace/.explore-data/restored
+++ cat /workspace/.explore-data/restored/a
++ test hello = hello
+++ cat /workspace/.explore-data/restored/sub/copy
++ test hello = hello
+++ readlink /workspace/.explore-data/restored/sub/link
++ test ../a = ../a
++ test -d /workspace/.explore-data/restored/empty
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback restore second /workspace/.explore-data/restored --repo /workspace/.explore-data/repo
+user error (restore target is not empty: /workspace/.explore-data/restored)
+++ cat /workspace/.explore-data/restored/a
++ test hello = hello
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback restore second /workspace/.explore-data/restored2 --repo /workspace/.explore-data/repo
+restored second to /workspace/.explore-data/restored2
+++ cat /workspace/.explore-data/restored2/a
++ test changed = changed
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback verify --repo /workspace/.explore-data/repo
+verified 2 snapshots, 2 objects
+++ find /workspace/.explore-data/repo/objects -type f
+++ head -1
++ obj=/workspace/.explore-data/repo/objects/7f8b1dfc466b6249f06cbe55c9174df2578e7754da793fded244ef5cba2a38f1
++ printf corrupt
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback verify --repo /workspace/.explore-data/repo
+user error (corrupt object: 7f8b1dfc466b6249f06cbe55c9174df2578e7754da793fded244ef5cba2a38f1)
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback restore first /workspace/.explore-data/corrupt-restore --repo /workspace/.explore-data/repo
+restored first to /workspace/.explore-data/corrupt-restore
++ echo 'first snapshot unaffected by selected object'
++ set +x
+first snapshot unaffected by selected object
+Journeys completed
