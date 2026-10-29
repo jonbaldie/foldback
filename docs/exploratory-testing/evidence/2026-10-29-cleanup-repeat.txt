@@ -1,0 +1,132 @@
+REGISTERED cleanup before docker build: container=foldback-explore-cleanup-20261029 image=foldback-explore-cleanup-20261029, no ports or volumes published
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from dev.Dockerfile
+#1 transferring dockerfile: 767B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/haskell:9.12.2-slim-bookworm
+#2 DONE 0.7s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [1/5] FROM docker.io/library/haskell:9.12.2-slim-bookworm@sha256:c83dcb092fff03ab85a6febf903f7ac378983ddadda53bb6da31ea74d70546f4
+#4 resolve docker.io/library/haskell:9.12.2-slim-bookworm@sha256:c83dcb092fff03ab85a6febf903f7ac378983ddadda53bb6da31ea74d70546f4 0.0s done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 2.31kB done
+#5 DONE 0.0s
+
+#6 [2/5] RUN apt-get update && apt-get install -y --no-install-recommends     build-essential     libgmp-dev     zlib1g-dev     git     bash     ca-certificates     && rm -rf /var/lib/apt/lists/*     && git config --system safe.directory '*'
+#6 CACHED
+
+#7 [3/5] WORKDIR /workspace
+#7 CACHED
+
+#8 [4/5] COPY foldback.cabal cabal.project ./
+#8 CACHED
+
+#9 [5/5] RUN cabal update && cabal build -j2 --only-dependencies --enable-tests all
+#9 CACHED
+
+#10 exporting to image
+#10 exporting layers done
+#10 exporting manifest sha256:5e6664282e1adaaef2ea6cca11ecf79384a539d803506d677bd121b6958c7070 done
+#10 exporting config sha256:eb0544f794979a2e2dc93f3fcba4760de42d8fa639f82e28558b190f24a2bc14 done
+#10 exporting attestation manifest sha256:cf97851826c9fad8842f4e2a3d3609365aabd79d83e537e30f66707b556fa5ab 0.0s done
+#10 exporting manifest list sha256:fa973b4d7ff3a33677a1f4441fdf0a8257484c3932ed019828fbed42a3620809 0.0s done
+#10 naming to docker.io/library/foldback-explore-cleanup-20261029:latest done
+#10 unpacking to docker.io/library/foldback-explore-cleanup-20261029:latest
+#10 unpacking to docker.io/library/foldback-explore-cleanup-20261029:latest 10.0s done
+#10 DONE 10.2s
+8496c348a47dc1919dc522be4b54f396d28a43741ad7a5a7abdb2f312ef571ac
+REGISTERED init PID=1908654
+Container port bindings:
+{}
+Configuration is affected by the following files:
+- cabal.project
+Resolving dependencies...
+Build profile: -w ghc-9.12.2 -O1
+In order, the following will be built (use -v for more details):
+ - foldback-0.1.8.0 (lib) (first run)
+ - foldback-0.1.8.0 (exe:foldback) (first run)
+Configuring library for foldback-0.1.8.0...
+Preprocessing library for foldback-0.1.8.0...
+Building library for foldback-0.1.8.0...
+[1 of 4] Compiling Foldback.Algebra ( src/Foldback/Algebra.hs, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/build/Foldback/Algebra.o, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/build/Foldback/Algebra.dyn_o )
+[2 of 4] Compiling Foldback.Repository ( src/Foldback/Repository.hs, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/build/Foldback/Repository.o, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/build/Foldback/Repository.dyn_o )
+[3 of 4] Compiling Paths_foldback   ( dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/build/autogen/Paths_foldback.hs, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/build/Paths_foldback.o, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/build/Paths_foldback.dyn_o )
+[4 of 4] Compiling Foldback         ( src/Foldback.hs, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/build/Foldback.o, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/build/Foldback.dyn_o )
+Configuring executable 'foldback' for foldback-0.1.8.0...
+Preprocessing executable 'foldback' for foldback-0.1.8.0...
+Building executable 'foldback' for foldback-0.1.8.0...
+[1 of 1] Compiling Main             ( app/Main.hs, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback-tmp/Main.o )
+[2 of 2] Linking dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback
+Configuration is affected by the following files:
+- cabal.project
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback backup /workspace/.explore-data/src --repo /workspace/.explore-data/repo --name first
+snapshot first: 2 files, 12 bytes
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback list --repo /workspace/.explore-data/repo
+first	2 files	12 bytes
++ find /workspace/.explore-data/repo/objects -type f
++ wc -l
+1
++ printf 'changed\n'
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback backup /workspace/.explore-data/src --repo /workspace/.explore-data/repo --name second
+snapshot second: 2 files, 14 bytes
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback list --repo /workspace/.explore-data/repo
+first	2 files	12 bytes
+second	2 files	14 bytes
++ find /workspace/.explore-data/repo/objects -type f
++ wc -l
+2
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback backup /workspace/.explore-data/src --repo /workspace/.explore-data/repo --name first
+user error (snapshot already exists: first)
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback restore first /workspace/.explore-data/restored --repo /workspace/.explore-data/repo
+restored first to /workspace/.explore-data/restored
+++ cat /workspace/.explore-data/restored/a
++ test hello = hello
+++ cat /workspace/.explore-data/restored/sub/copy
++ test hello = hello
+++ readlink /workspace/.explore-data/restored/sub/link
++ test ../a = ../a
++ test -d /workspace/.explore-data/restored/empty
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback restore second /workspace/.explore-data/restored --repo /workspace/.explore-data/repo
+user error (restore target is not empty: /workspace/.explore-data/restored)
+++ cat /workspace/.explore-data/restored/a
++ test hello = hello
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback restore second /workspace/.explore-data/restored2 --repo /workspace/.explore-data/repo
+restored second to /workspace/.explore-data/restored2
+++ cat /workspace/.explore-data/restored2/a
++ test changed = changed
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback verify --repo /workspace/.explore-data/repo
+verified 2 snapshots, 2 objects
+++ find /workspace/.explore-data/repo/objects -type f
+++ head -1
++ obj=/workspace/.explore-data/repo/objects/7f8b1dfc466b6249f06cbe55c9174df2578e7754da793fded244ef5cba2a38f1
++ printf corrupt
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback verify --repo /workspace/.explore-data/repo
+user error (corrupt object: 7f8b1dfc466b6249f06cbe55c9174df2578e7754da793fded244ef5cba2a38f1)
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.8.0/x/foldback/build/foldback/foldback restore first /workspace/.explore-data/corrupt-restore --repo /workspace/.explore-data/repo
+restored first to /workspace/.explore-data/corrupt-restore
++ echo 'first snapshot unaffected by selected object'
++ set +x
+first snapshot unaffected by selected object
+Journeys completed
+PASS journeys
+CLEANUP starting (pass exit 0)
+foldback-explore-cleanup-20261029
+Untagged: foldback-explore-cleanup-20261029:latest
+Deleted: sha256:fa973b4d7ff3a33677a1f4441fdf0a8257484c3932ed019828fbed42a3620809
+CLEANUP container check:
+CLEANUP image check:
+CLEANUP volume check:
+CLEANUP recorded container init PID: 1908654
+CLEANUP init PID absent
+CLEANUP host process name check:
+CLEANUP host listening ports for recorded PID:
+none
+CLEANUP test data absent
