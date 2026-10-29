@@ -91,7 +91,7 @@ cabal test
 
 The test suite exercises the public command interface (`backup`, `list`, `verify`, `restore`), negative argument validation, corruption detection, and the core algebraic fold seam.
 
-For an end-to-end run through the public CLI, see the [Foldback CLI exploratory report](docs/exploratory-testing/2026-09-26-foldback-cli.md).
+For end-to-end runs through the public CLI, see the exploratory reports for [2026-09-26](docs/exploratory-testing/2026-09-26-foldback-cli.md) and [2026-10-29](docs/exploratory-testing/2026-10-29-foldback-cli.md).
 
 ### Coverage-Guided Property Testing (CGPT)
 
