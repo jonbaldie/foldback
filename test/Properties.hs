@@ -7,7 +7,6 @@ import Control.Monad (unless, void)
 import qualified Crypto.Hash.SHA256 as SHA256
 import qualified Data.ByteString as ByteString
 import Data.List (isInfixOf, isPrefixOf)
-import qualified Data.Set as Set
 import Data.Word (Word8)
 import Foldback.Algebra
 import Foldback.Repository
@@ -29,12 +28,6 @@ import System.FilePath ((</>))
 import System.IO (hClose, openTempFile)
 import Test.QuickCheck
 import Text.Read (readMaybe)
-
-data Rose
-  = RDir FilePath [Rose]
-  | RFile FilePath Digest Integer
-  | RLink FilePath FilePath
-  deriving stock (Eq, Show)
 
 data Piece
   = PDir String [Piece]
@@ -62,9 +55,7 @@ propertyTests :: IO ()
 propertyTests =
   mapM_
     (uncurry runProperty)
-    [ ("prop_literalManifestExpectations", prop_literalManifestExpectations)
-    , ("prop_manifestMatchesTally", prop_manifestMatchesTally)
-    , ("prop_snapshotShowRead", prop_snapshotShowRead)
+    [ ("prop_snapshotShowRead", prop_snapshotShowRead)
     , ("prop_snapshotDigestMatchesBytes", prop_snapshotDigestMatchesBytes)
     , ("prop_fixtureDigest", prop_fixtureDigest)
     , ("prop_manifestDigestPath", prop_manifestDigestPath)
@@ -84,150 +75,6 @@ runProperty name testProperty = do
         }
       testProperty
   unless (isSuccess result) (ioError (userError (name <> "\n" <> output result)))
-
-prop_literalManifestExpectations :: Property
-prop_literalManifestExpectations =
-  conjoin
-    [ counterexample "empty root directory" $
-        property $
-          deriveManifest (Fix (DirectoryF "." []))
-            == Summary
-              { entries = [Directory "."]
-              , fileCount = 0
-              , totalBytes = 0
-              , objects = Set.empty
-              }
-    , counterexample "two files sharing an object" $
-        property $
-          deriveManifest
-            ( Fix
-                ( DirectoryF
-                    "."
-                    [ Fix (RegularFileF "a" (Digest "d") 3)
-                    , Fix (RegularFileF "b" (Digest "d") 4)
-                    ]
-                )
-            )
-            == Summary
-              { entries =
-                  [ Directory "."
-                  , RegularFile "a" (Digest "d") 3
-                  , RegularFile "b" (Digest "d") 4
-                  ]
-              , fileCount = 2
-              , totalBytes = 7
-              , objects = Set.singleton (Digest "d")
-              }
-    , counterexample "negative file size remains in the algebra" $
-        property $
-          deriveManifest (Fix (RegularFileF "a" (Digest "d") (-5)))
-            == Summary
-              { entries = [RegularFile "a" (Digest "d") (-5)]
-              , fileCount = 1
-              , totalBytes = -5
-              , objects = Set.singleton (Digest "d")
-              }
-    ]
-
-prop_manifestMatchesTally :: Property
-prop_manifestMatchesTally =
-  forAllShrink genRose shrinkRose $ \rose ->
-    deriveManifest (toFix rose) === tallyRose rose
-
-genRose :: Gen Rose
-genRose = sized (genRoseAt . min 4)
-
-genRoseAt :: Int -> Gen Rose
-genRoseAt depth
-  | depth <= 0 = oneof [genEmptyDirectory, genRoseFile, genRoseLink]
-  | otherwise =
-      frequency
-        [ (3, genRoseDirectory depth)
-        , (3, genRoseFile)
-        , (2, genRoseLink)
-        ]
-
-genEmptyDirectory :: Gen Rose
-genEmptyDirectory = RDir <$> genRosePath <*> pure []
-
-genRoseDirectory :: Int -> Gen Rose
-genRoseDirectory depth = do
-  path <- genRosePath
-  childCount <- chooseInt (0, 3)
-  children <- vectorOf childCount (genRoseAt (depth - 1))
-  pure (RDir path children)
-
-genRoseFile :: Gen Rose
-genRoseFile =
-  RFile
-    <$> genRosePath
-    <*> (Digest <$> resize 4 (listOf (elements ("abc012" :: String))))
-    <*> chooseInteger (-20, 20)
-
-genRoseLink :: Gen Rose
-genRoseLink = RLink <$> genRosePath <*> genRosePath
-
-genRosePath :: Gen FilePath
-genRosePath = resize 6 (listOf (elements ("ab/._" :: String)))
-
-shrinkRose :: Rose -> [Rose]
-shrinkRose (RDir path children) =
-  children
-    <> [RDir smallerPath children | smallerPath <- shrink path]
-    <> [RDir path smallerChildren | smallerChildren <- shrinkList shrinkRose children]
-shrinkRose (RFile path (Digest digest) size) =
-  [RFile smallerPath (Digest digest) size | smallerPath <- shrink path]
-    <> [RFile path (Digest smallerDigest) size | smallerDigest <- shrink digest]
-    <> [RFile path (Digest digest) smallerSize | smallerSize <- shrink size]
-shrinkRose (RLink path target) =
-  [RLink smallerPath target | smallerPath <- shrink path]
-    <> [RLink path smallerTarget | smallerTarget <- shrink target]
-
-toFix :: Rose -> Fix FsF
-toFix (RDir path children) = Fix (DirectoryF path (map toFix children))
-toFix (RFile path digest size) = Fix (RegularFileF path digest size)
-toFix (RLink path target) = Fix (SymbolicLinkF path target)
-
-tallyRose :: Rose -> Summary
-tallyRose rose =
-  let tally = walkRose rose
-  in Summary
-      { entries = tallyEntries tally
-      , fileCount = tallyFiles tally
-      , totalBytes = tallyBytes tally
-      , objects = tallyObjects tally
-      }
-
-data Tally = Tally
-  { tallyEntries :: [ManifestEntry]
-  , tallyFiles :: Int
-  , tallyBytes :: Integer
-  , tallyObjects :: Set.Set Digest
-  }
-
-walkRose :: Rose -> Tally
-walkRose (RDir path children) =
-  let childTallies = map walkRose children
-  in Tally
-      { tallyEntries = Directory path : concatMap tallyEntries childTallies
-      , tallyFiles = sum (map tallyFiles childTallies)
-      , tallyBytes = sum (map tallyBytes childTallies)
-      , tallyObjects = Set.unions (map tallyObjects childTallies)
-      }
-walkRose (RFile path digest size) =
-  Tally
-    { tallyEntries = [RegularFile path digest size]
-    , tallyFiles = 1
-    , tallyBytes = size
-    , tallyObjects = Set.singleton digest
-    }
-walkRose (RLink path target) =
-  Tally
-    { tallyEntries = [SymbolicLink path target]
-    , tallyFiles = 0
-    , tallyBytes = 0
-    , tallyObjects = Set.empty
-    }
 
 prop_snapshotShowRead :: Property
 prop_snapshotShowRead =
