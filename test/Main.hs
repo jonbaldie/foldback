@@ -64,6 +64,7 @@ tests =
   , ("both open modes reject an empty path", testOpenRejectsEmptyPath)
   , ("read open rejects an incomplete repository layout", testOpenRejectsIncompleteLayout)
   , ("library backup prepares before repository creation", testLibraryBackupPreparation)
+  , ("backup manifest traversal order", testBackupManifestTraversalOrder)
   , ("backup and restore", testBackupAndRestore)
   , ("list and verify", testListAndVerify)
   , ("list and verify many snapshots", testListAndVerifyManySnapshots)
@@ -254,6 +255,29 @@ testDerivesManifest =
             )
         )
     )
+
+testBackupManifestTraversalOrder :: IO ()
+testBackupManifestTraversalOrder = withTemporaryDirectory "foldback-traversal" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repositoryPath = sandbox </> "repository"
+  createDirectory source
+  createDirectory (source </> "b")
+  createDirectory (source </> "a")
+  writeFile (source </> "b" </> "copy") "hello"
+  writeFile (source </> "a" </> "file") "hello"
+  createFileLink "b/copy" (source </> "c")
+  _ <- backup repositoryPath (Just "first") source
+  repository <- openRepository repositoryPath
+  snapshots <- loadCommittedSnapshots repository
+  case snapshots of
+    [("first", snapshot)] -> do
+      let digest = Digest "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+      assertEqual "sorted pre-order manifest"
+        [Directory ".", Directory "a", RegularFile "a/file" digest 5, Directory "b", RegularFile "b/copy" digest 5, SymbolicLink "c" "b/copy"]
+        (snapshotEntries snapshot)
+      assertEqual "file count" 2 (snapshotFileCount snapshot)
+      assertEqual "total bytes" 10 (snapshotTotalBytes snapshot)
+    _ -> fail "expected one committed snapshot"
 
 testBackupAndRestore :: IO ()
 testBackupAndRestore = withTemporaryDirectory "foldback-test" $ \sandbox -> do
