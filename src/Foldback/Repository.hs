@@ -19,7 +19,7 @@ module Foldback.Repository
   , writeSnapshot
   ) where
 
-import Control.Exception (bracket)
+import Control.Exception (IOException, bracket, throwIO, try)
 import Control.Monad (filterM, foldM, unless, void, when)
 import qualified Crypto.Hash.SHA256 as SHA256
 import qualified Data.ByteString as ByteString
@@ -32,6 +32,7 @@ import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.Word (Word8)
 import Foldback.Algebra
+import Foldback.Error (FoldbackError (..))
 import Foldback.TreeScanner (scanSourceTree)
 import Numeric (showHex)
 import System.Directory
@@ -129,14 +130,14 @@ openRepositoryWithInitialization initialize repositoryPath = do
     createDirectoryIfMissing True (snapshotsDirectory repository)
     writeFileIfMissing (formatPath repository) repositoryFormat
   formatExists <- doesFileExist (formatPath repository)
-  unless formatExists (ioError (userError ("not a foldback repository: " <> repositoryPath)))
+  unless formatExists (throwIO (NotARepository repositoryPath))
   format <- readStrictFile (formatPath repository)
-  unless (format == repositoryFormat) (ioError (userError "unsupported repository format"))
+  unless (format == repositoryFormat) (throwIO UnsupportedRepositoryFormat)
   -- Repository operations list these directories directly, so a handle must
   -- never be issued for a layout that is missing either of them.
   objectsExist <- doesDirectoryExist (objectsDirectory repository)
   snapshotsExist <- doesDirectoryExist (snapshotsDirectory repository)
-  unless (objectsExist && snapshotsExist) (ioError (userError ("not a foldback repository: " <> repositoryPath)))
+  unless (objectsExist && snapshotsExist) (throwIO (NotARepository repositoryPath))
   pure repository
 
 repositoryAt :: FilePath -> Repository
@@ -161,7 +162,7 @@ backup repositoryPath requestedName unnormalisedSource = do
   let snapshotPath = snapshotsDirectory repository </> name
   withSnapshotNameReservation snapshotPath name $ do
     collision <- doesPathExist snapshotPath
-    when collision (ioError (userError ("snapshot already exists: " <> name)))
+    when collision (throwIO (SnapshotAlreadyExists name))
     summary <- scanSourceTree source (storeObject repository)
     createdAt <- floor <$> getPOSIXTime
     let snapshot =
@@ -187,7 +188,7 @@ validateBackupRequest :: FilePath -> Maybe String -> FilePath -> IO FilePath
 validateBackupRequest repositoryPath requestedName unnormalisedSource = do
   -- normalise "" is ".", so an empty source would silently snapshot the
   -- working directory; refuse it before any path handling.
-  when (null unnormalisedSource) (ioError (userError "source cannot be empty"))
+  when (null unnormalisedSource) (throwIO EmptySource)
   -- A trailing separator resolves the final path component, so lstat would
   -- report the link's target and the symlink check below would pass. A
   -- trailing "." component does the same ("link/." lstats the link's target),
@@ -195,10 +196,10 @@ validateBackupRequest repositoryPath requestedName unnormalisedSource = do
   -- real directories with a slash or dot suffix are unaffected.
   let source = normaliseBackupSource unnormalisedSource
   sourceExists <- doesDirectoryExist source
-  unless sourceExists (ioError (userError ("source is not a directory: " <> source)))
+  unless sourceExists (throwIO (SourceNotDirectory source))
   sourceStatus <- Posix.getSymbolicLinkStatus source
-  when (Posix.isSymbolicLink sourceStatus) (ioError (userError ("source is not a directory: " <> source)))
-  ensureDisjoint "repository must be outside the source tree" source repositoryPath
+  when (Posix.isSymbolicLink sourceStatus) (throwIO (SourceNotDirectory source))
+  ensureDisjoint RepositoryOverlapsSource source repositoryPath
   maybe (pure ()) validateCreatedSnapshotName requestedName
   validateRepositoryPath repositoryPath
   pure source
@@ -210,12 +211,12 @@ restore :: Repository -> String -> FilePath -> IO ()
 restore repository name unnormalisedTarget = do
   -- Refuse an empty target before path resolution or snapshot loading can
   -- produce a less useful error for this invalid argument.
-  when (null unnormalisedTarget) (ioError (userError "restore target cannot be empty"))
+  when (null unnormalisedTarget) (throwIO EmptyRestoreTarget)
   -- A trailing separator resolves the final path component, so lstat would
   -- report the link's target and the symlink check below would pass. Drop it
   -- before inspecting the path; real directories with a slash are unaffected.
   let target = dropTrailingPathSeparator unnormalisedTarget
-  ensureDisjoint "restore target must be outside the repository" (repositoryRoot repository) target
+  ensureDisjoint RestoreTargetOverlapsRepository (repositoryRoot repository) target
   snapshot <- loadCommittedSnapshot repository name
   prepareTarget target
   void (foldM (restoreEntry repository target) Set.empty (snapshotEntries snapshot))
@@ -285,28 +286,28 @@ verifyRepository repository = do
 
   uniqueExpectedSize (name, sizes) = case Set.toList sizes of
     [size] -> pure (name, size)
-    _ -> ioError (userError ("object has conflicting sizes: " <> name))
+    _ -> throwIO (ConflictingObjectSizes name)
 
   verifyObjectName name = do
-    unless (validDigest name) (ioError (userError ("invalid object name: " <> name)))
+    unless (validDigest name) (throwIO (InvalidObjectName name))
     let path = objectsDirectory repository </> name
     statusResult <- tryIOError (Posix.getSymbolicLinkStatus path)
     case statusResult of
       Right status
         | Posix.isRegularFile status && not (Posix.isSymbolicLink status) -> pure ()
-        | otherwise -> ioError (userError ("object is not a regular file: " <> name))
-      Left _ -> ioError (userError ("object is not a regular file: " <> name))
+        | otherwise -> throwIO (ObjectNotRegularFile name)
+      Left _ -> throwIO (ObjectNotRegularFile name)
     actual <- hashFile path
-    unless (unDigest actual == name) (ioError (userError ("corrupt object: " <> name)))
+    unless (unDigest actual == name) (throwIO (CorruptObject name))
 
   verifyReference objectNameSet (name, expectedSize) = do
-    unless (name `Set.member` objectNameSet) (ioError (userError ("missing object: " <> name)))
+    unless (name `Set.member` objectNameSet) (throwIO (MissingObject name))
     actualSize <- getFileSize (objectsDirectory repository </> name)
-    unless (actualSize == expectedSize) (ioError (userError ("wrong object size: " <> name)))
+    unless (actualSize == expectedSize) (throwIO (WrongObjectSize name))
 
 validateRepositoryPath :: FilePath -> IO ()
 validateRepositoryPath repository =
-  when (null repository) (ioError (userError "--repo cannot be empty"))
+  when (null repository) (throwIO EmptyRepositoryPath)
 
 writeFileIfMissing :: FilePath -> String -> IO ()
 writeFileIfMissing path content = do
@@ -329,7 +330,7 @@ generatedSnapshotName = formatTime defaultTimeLocale "%Y%m%dT%H%M%S%qZ" <$> getC
 
 validateSnapshotName :: String -> IO ()
 validateSnapshotName name =
-  unless valid (ioError (userError "snapshot names may contain only letters, digits, '.', '_' and '-'"))
+  unless valid (throwIO InvalidSnapshotName)
  where
   valid =
     not (null name)
@@ -348,7 +349,7 @@ withSnapshotNameReservation snapshotPath name action =
     case locked of
       Left _ -> do
         void (tryIOError (closeFd fd))
-        ioError (userError ("snapshot already exists: " <> name))
+        throwIO (SnapshotAlreadyExists name)
       Right () -> pure fd
   releaseLock fd = void (tryIOError (closeFd fd))
 
@@ -361,7 +362,7 @@ validateCreatedSnapshotName name = do
   validateSnapshotName name
   when
     (take 1 name `elem` ["-", "."])
-    (ioError (userError "snapshot names may not begin with '-' or '.'"))
+    (throwIO SnapshotNameStartsWithDashOrDot)
 
 -- Dotfiles and staging leftovers (".snapshot-", ".incoming-", ".digest-") in the live
 -- directories are not repository artifacts; directory scans ignore them. On
@@ -389,10 +390,13 @@ hasCommittedSnapshotEvidence repository name = do
   if sidecarExists
     then pure True
     else do
-      parsed <- tryIOError (readSnapshot manifestPath)
-      pure $ case parsed of
-        Right snapshot -> snapshotName snapshot == name
-        Left _ -> False
+      parsed <- try (try (readSnapshot manifestPath)) :: IO (Either IOException (Either FoldbackError Snapshot))
+      case parsed of
+        Right (Right snapshot) -> pure (snapshotName snapshot == name)
+        Right (Left (SnapshotDoesNotExist _)) -> pure False
+        Right (Left (InvalidSnapshot _)) -> pure False
+        Right (Left problem) -> throwIO problem
+        Left _ -> pure False
 
 storeObject :: Repository -> FilePath -> IO (Digest, Integer)
 storeObject repository source = do
@@ -411,7 +415,7 @@ storeObject repository source = do
     case destinationStatus of
       Right status
         | Posix.isSymbolicLink status || not (Posix.isRegularFile status) ->
-            ioError (userError ("object is not a regular file: " <> unDigest digest))
+            throwIO (ObjectNotRegularFile (unDigest digest))
         | otherwise -> removeFile temporaryPath
       Left _ -> renameFile temporaryPath destination
     pure (digest, size)
@@ -469,7 +473,7 @@ writeSnapshot destination snapshot =
       linked <- tryIOError (Posix.createLink temporaryPath destination)
       case linked of
         Left err | isAlreadyExistsError err ->
-          ioError (userError ("snapshot already exists: " <> snapshotName snapshot))
+          throwIO (SnapshotAlreadyExists (snapshotName snapshot))
         Left err -> ioError err
         Right () -> removeFile temporaryPath
     )
@@ -506,10 +510,10 @@ manifestDigestPath manifestPath = takeDirectory manifestPath </> ("." <> takeNam
 readManifestDigest :: FilePath -> IO Digest
 readManifestDigest manifestPath = do
   exists <- doesFileExist sidecarPath
-  unless exists (ioError (userError ("corrupt snapshot manifest: no integrity digest for " <> takeName manifestPath)))
+  unless exists (throwIO (MissingManifestDigest (takeName manifestPath)))
   content <- readStrictFile sidecarPath
   let digest = takeWhile (/= '\n') content
-  unless (validDigest digest) (ioError (userError ("corrupt snapshot manifest: " <> takeName manifestPath)))
+  unless (validDigest digest) (throwIO (CorruptSnapshotManifest (takeName manifestPath)))
   pure (Digest digest)
  where
   sidecarPath = manifestDigestPath manifestPath
@@ -524,10 +528,10 @@ cleanupTemporaryFile (path, handle) = do
 readSnapshot :: FilePath -> IO Snapshot
 readSnapshot path = do
   exists <- doesFileExist path
-  unless exists (ioError (userError ("snapshot does not exist: " <> takeName path)))
+  unless exists (throwIO (SnapshotDoesNotExist (takeName path)))
   content <- readStrictFile path
   case readMaybe content of
-    Nothing -> ioError (userError ("invalid snapshot: " <> path))
+    Nothing -> throwIO (InvalidSnapshot path)
     Just snapshot -> pure snapshot
  where
   takeName = reverse . takeWhile (/= '/') . reverse
@@ -536,25 +540,25 @@ readNamedSnapshot :: Repository -> String -> IO Snapshot
 readNamedSnapshot repository name = do
   let manifestPath = snapshotsDirectory repository </> name
   snapshot <- readSnapshot manifestPath
-  unless (snapshotName snapshot == name) (ioError (userError ("snapshot name does not match filename: " <> name)))
+  unless (snapshotName snapshot == name) (throwIO (SnapshotNameMismatch name))
   expectedDigest <- readManifestDigest manifestPath
   actualDigest <- hashFile manifestPath
-  unless (actualDigest == expectedDigest) (ioError (userError ("corrupt snapshot manifest: " <> name)))
+  unless (actualDigest == expectedDigest) (throwIO (CorruptSnapshotManifest name))
   pure snapshot
 
 validateSnapshot :: Snapshot -> IO ()
 validateSnapshot snapshot = do
-  unless (snapshotFormat snapshot == snapshotFormatVersion) (ioError (userError "unsupported snapshot format"))
-  unless (snapshotName snapshot /= "") (ioError (userError "invalid empty snapshot name"))
+  unless (snapshotFormat snapshot == snapshotFormatVersion) (throwIO UnsupportedSnapshotFormat)
+  unless (snapshotName snapshot /= "") (throwIO EmptySnapshotName)
   case snapshotEntries snapshot of
     Directory "." : rest -> do
       validatePaths rest
       let regularFiles = [(digest, size) | RegularFile _ digest size <- rest]
-      unless (all (validDigest . unDigest . fst) regularFiles) (ioError (userError "snapshot contains an invalid digest"))
-      unless (all ((>= 0) . snd) regularFiles) (ioError (userError "snapshot contains a negative file size"))
-      unless (snapshotFileCount snapshot == length regularFiles) (ioError (userError "snapshot file count is inconsistent"))
-      unless (snapshotTotalBytes snapshot == sum (map snd regularFiles)) (ioError (userError "snapshot byte count is inconsistent"))
-    _ -> ioError (userError "snapshot must begin with its root directory")
+      unless (all (validDigest . unDigest . fst) regularFiles) (throwIO SnapshotInvalidDigest)
+      unless (all ((>= 0) . snd) regularFiles) (throwIO SnapshotNegativeFileSize)
+      unless (snapshotFileCount snapshot == length regularFiles) (throwIO SnapshotFileCountInconsistent)
+      unless (snapshotTotalBytes snapshot == sum (map snd regularFiles)) (throwIO SnapshotByteCountInconsistent)
+    _ -> throwIO SnapshotMissingRootDirectory
 
 validDigest :: String -> Bool
 validDigest digest =
@@ -572,11 +576,11 @@ validatePaths manifestEntries = void (foldM validate (Set.empty, Set.singleton "
   validate (seen, establishedDirs) entry = do
     let path = entryPath entry
         parent = takeDirectory path
-    unless (safeRelativePath path) (ioError (userError ("unsafe snapshot path: " <> path)))
-    when (Set.member path seen) (ioError (userError ("duplicate snapshot path: " <> path)))
-    when (any (`Set.member` symlinks) (separatorPrefixes path)) (ioError (userError ("path descends through a symlink: " <> path)))
-    when (any (`Set.member` regularFiles) (separatorPrefixes path)) (ioError (userError ("path descends through a regular file: " <> path)))
-    unless (Set.member parent establishedDirs) (ioError (userError ("missing parent directory: " <> parent)))
+    unless (safeRelativePath path) (throwIO (UnsafeSnapshotPath path))
+    when (Set.member path seen) (throwIO (DuplicateSnapshotPath path))
+    when (any (`Set.member` symlinks) (separatorPrefixes path)) (throwIO (SnapshotPathThroughSymlink path))
+    when (any (`Set.member` regularFiles) (separatorPrefixes path)) (throwIO (SnapshotPathThroughRegularFile path))
+    unless (Set.member parent establishedDirs) (throwIO (SnapshotMissingParentDirectory parent))
     let nextEstablishedDirs = case entry of
           Directory dir -> Set.insert dir establishedDirs
           _ -> establishedDirs
@@ -613,7 +617,7 @@ prepareTarget unnormalisedTarget = do
   -- An empty target passes every following check vacuously and makes each
   -- restored entry resolve against the working directory, silently
   -- overwriting matching files there.
-  when (null target) (ioError (userError "restore target cannot be empty"))
+  when (null target) (throwIO EmptyRestoreTarget)
   -- Refuse symlink components anywhere in the target path before creating
   -- anything: a missing target under a symlink ancestor would otherwise be
   -- created inside the link's destination.
@@ -625,8 +629,8 @@ prepareTarget unnormalisedTarget = do
   case targetStatus of
     Right status | Posix.isDirectory status -> do
       contents <- listDirectory target
-      unless (null contents) (ioError (userError ("restore target is not empty: " <> target)))
-    Right _ -> ioError (userError ("restore target is not a directory: " <> target))
+      unless (null contents) (throwIO (RestoreTargetNotEmpty target))
+    Right _ -> throwIO (RestoreTargetNotDirectory target)
     Left _ -> createDirectoryIfMissing True target
 
 -- Refuse a target path whose any existing component, from the root down to
@@ -643,7 +647,7 @@ rejectSymlinkAncestors target = go (pathPrefixes target)
     case status of
       Right linkStatus
         | Posix.isSymbolicLink linkStatus ->
-            ioError (userError ("restore target is not a directory: " <> target))
+            throwIO (RestoreTargetNotDirectory target)
         | otherwise -> go rest
       Left _ -> pure ()
 
@@ -663,16 +667,16 @@ restoreEntry repository target verified (RegularFile path expectedDigest expecte
   let object = objectsDirectory repository </> unDigest expectedDigest
   statusResult <- tryIOError (Posix.getSymbolicLinkStatus object)
   case statusResult of
-    Left _ -> ioError (userError ("missing object: " <> unDigest expectedDigest))
+    Left _ -> throwIO (MissingObject (unDigest expectedDigest))
     Right status
       | Posix.isSymbolicLink status || not (Posix.isRegularFile status) ->
-          ioError (userError ("object is not a regular file: " <> unDigest expectedDigest))
+          throwIO (ObjectNotRegularFile (unDigest expectedDigest))
       | otherwise -> do
           unless (Set.member expectedDigest verified) $ do
             actualDigest <- hashFile object
-            unless (actualDigest == expectedDigest) (ioError (userError ("corrupt object: " <> unDigest expectedDigest)))
+            unless (actualDigest == expectedDigest) (throwIO (CorruptObject (unDigest expectedDigest)))
           actualSize <- getFileSize object
-          unless (actualSize == expectedSize) (ioError (userError ("wrong object size: " <> unDigest expectedDigest)))
+          unless (actualSize == expectedSize) (throwIO (WrongObjectSize (unDigest expectedDigest)))
           createDirectoryIfMissing True (takeDirectory (target </> path))
           copyFile object (target </> path)
           pure (Set.insert expectedDigest verified)
@@ -681,7 +685,7 @@ restoreEntry _ target verified (SymbolicLink path linkTarget) = do
   Posix.createSymbolicLink linkTarget (target </> path)
   pure verified
 
-ensureDisjoint :: String -> FilePath -> FilePath -> IO ()
+ensureDisjoint :: FoldbackError -> FilePath -> FilePath -> IO ()
 ensureDisjoint problem first second = do
   canonicalFirst <- canonicalizeLoose first
   canonicalSecond <- canonicalizeLoose second
@@ -690,7 +694,7 @@ ensureDisjoint problem first second = do
         || isPathPrefixOf canonicalFirst canonicalSecond
         || isPathPrefixOf canonicalSecond canonicalFirst
     )
-    (ioError (userError problem))
+    (throwIO problem)
 
 canonicalizeLoose :: FilePath -> IO FilePath
 canonicalizeLoose path = do

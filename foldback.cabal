@@ -22,6 +22,7 @@ library
   exposed-modules:
       Foldback
       Foldback.Algebra
+      Foldback.Error
       Foldback.Repository
       Foldback.TreeScanner
   other-modules:

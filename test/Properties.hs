@@ -2,13 +2,14 @@ module Properties
   ( propertyTests
   ) where
 
-import Control.Exception (IOException, bracket, displayException, try)
+import Control.Exception (bracket, displayException, try)
 import Control.Monad (unless, void)
 import qualified Crypto.Hash.SHA256 as SHA256
 import qualified Data.ByteString as ByteString
 import Data.List (isInfixOf, isPrefixOf)
 import Data.Word (Word8)
 import Foldback.Algebra
+import Foldback.Error (FoldbackError)
 import Foldback.Repository
   ( Snapshot (..)
   , createOrOpenRepository
@@ -329,7 +330,7 @@ rejectsCorruption corruption snapshot =
             Left exception ->
               counterexample
                 ("expected exception containing " <> show expectedMessage <> ", got " <> displayException exception)
-                (expectedMessage `isInfixOf` displayException (exception :: IOException))
+                (expectedMessage `isInfixOf` displayException (exception :: FoldbackError))
             Right () ->
               counterexample "loadCommittedSnapshot accepted the corrupted snapshot" False
 
