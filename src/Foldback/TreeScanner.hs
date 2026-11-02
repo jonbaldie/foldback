@@ -2,10 +2,12 @@ module Foldback.TreeScanner
   ( scanSourceTree
   ) where
 
+import Control.Exception (throwIO)
 import Control.Monad (foldM)
 import Data.List (sort)
 import qualified Data.Set as Set
 import Foldback.Algebra (Digest, ManifestEntry (..), Summary (..))
+import Foldback.Error (FoldbackError (..))
 import System.Directory (listDirectory)
 import System.FilePath ((</>))
 import qualified System.Posix.Files as Posix
@@ -39,7 +41,7 @@ scanSourceTree source ingest = do
               , totalBytes = bytes
               , objects = digests
               }
-          else ioError (userError ("unsupported filesystem entry: " <> absolute))
+          else throwIO (UnsupportedFilesystemEntry absolute)
 
   childPath "." child = child
   childPath parent child = parent </> child

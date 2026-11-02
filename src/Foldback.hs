@@ -3,6 +3,7 @@ module Foldback
   ) where
 
 import Control.Exception (IOException, displayException, try)
+import Foldback.Error (FoldbackError, renderError)
 import Foldback.Repository
   ( BackupReceipt (..)
   , SnapshotInfo (..)
@@ -21,8 +22,11 @@ runCommand arguments =
   case parseCommand arguments of
     Left problem -> pure (Left problem)
     Right command -> do
-      result <- try (execute command)
-      pure (either (Left . displayException) Right (result :: Either IOException String))
+      result <- try (try (execute command)) :: IO (Either IOException (Either FoldbackError String))
+      pure $ case result of
+        Left problem -> Left (displayException problem)
+        Right (Left problem) -> Left (renderError problem)
+        Right (Right output) -> Right output
 
 data Command
   = Backup FilePath FilePath (Maybe String)

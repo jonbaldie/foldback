@@ -10,6 +10,7 @@ import GHC.Clock (getMonotonicTime)
 import qualified Data.ByteString as BS
 import qualified Data.Set as Set
 import Foldback.Algebra
+import Foldback.Error (FoldbackError (..), renderError)
 import Foldback.Repository
   ( BackupReceipt (..)
   , Repository
@@ -58,7 +59,8 @@ main = do
 
 tests :: [(String, IO ())]
 tests =
-  [ ("scan source tree", testScanSourceTree)
+  [ ("typed errors and exact CLI output", testTypedErrors)
+  , ("scan source tree", testScanSourceTree)
   , ("create-or-open repository writes the stable layout", testCreateOrOpenRepository)
   , ("read open rejects snapshots-only repository without creating layout", testOpenRejectsSnapshotsOnlyRepository)
   , ("both open modes reject unsupported format", testOpenRejectsUnsupportedFormat)
@@ -119,13 +121,98 @@ runTest (name, action) = do
       putStrLn ("PASS " <> name)
       pure True
 
+testTypedErrors :: IO ()
+testTypedErrors = withTemporaryDirectory "foldback-typed-errors" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+      target = sandbox </> "target"
+      fifo = source </> "pipe"
+  createDirectory source
+  _ <- backup repository (Just "daily") source
+  duplicate <- try (backup repository (Just "daily") source) :: IO (Either FoldbackError BackupReceipt)
+  assertEqual "duplicate constructor" (Left (SnapshotAlreadyExists "daily")) duplicate
+  empty <- try (openRepository "") :: IO (Either FoldbackError Repository)
+  case empty of
+    Left problem -> assertEqual "empty repository constructor" EmptyRepositoryPath problem
+    Right _ -> error "empty repository accepted"
+  let examples =
+        [ (EmptyRepositoryPath, "repository path cannot be empty")
+        , (NotARepository "example", "not a foldback repository: example")
+        , (UnsupportedRepositoryFormat, "unsupported repository format")
+        , (EmptySource, "source cannot be empty")
+        , (SourceNotDirectory "example", "source is not a directory: example")
+        , (RepositoryOverlapsSource, "repository must be outside the source tree")
+        , (SnapshotAlreadyExists "example", "snapshot already exists: example")
+        , (InvalidSnapshotName, "snapshot names may contain only letters, digits, '.', '_' and '-'")
+        , (SnapshotNameStartsWithDashOrDot, "snapshot names may not begin with '-' or '.'")
+        , (EmptyRestoreTarget, "restore target cannot be empty")
+        , (RestoreTargetOverlapsRepository, "restore target must be outside the repository")
+        , (RestoreTargetNotEmpty "example", "restore target is not empty: example")
+        , (RestoreTargetNotDirectory "example", "restore target is not a directory: example")
+        , (UnsupportedFilesystemEntry "example", "unsupported filesystem entry: example")
+        , (ConflictingObjectSizes "example", "object has conflicting sizes: example")
+        , (InvalidObjectName "example", "invalid object name: example")
+        , (ObjectNotRegularFile "example", "object is not a regular file: example")
+        , (CorruptObject "example", "corrupt object: example")
+        , (MissingObject "example", "missing object: example")
+        , (WrongObjectSize "example", "wrong object size: example")
+        , (MissingManifestDigest "example", "corrupt snapshot manifest: no integrity digest for example")
+        , (CorruptSnapshotManifest "example", "corrupt snapshot manifest: example")
+        , (SnapshotDoesNotExist "example", "snapshot does not exist: example")
+        , (InvalidSnapshot "example", "invalid snapshot: example")
+        , (SnapshotNameMismatch "example", "snapshot name does not match filename: example")
+        , (UnsupportedSnapshotFormat, "unsupported snapshot format")
+        , (EmptySnapshotName, "invalid empty snapshot name")
+        , (SnapshotInvalidDigest, "snapshot contains an invalid digest")
+        , (SnapshotNegativeFileSize, "snapshot contains a negative file size")
+        , (SnapshotFileCountInconsistent, "snapshot file count is inconsistent")
+        , (SnapshotByteCountInconsistent, "snapshot byte count is inconsistent")
+        , (SnapshotMissingRootDirectory, "snapshot must begin with its root directory")
+        , (UnsafeSnapshotPath "example", "unsafe snapshot path: example")
+        , (DuplicateSnapshotPath "example", "duplicate snapshot path: example")
+        , (SnapshotPathThroughSymlink "example", "path descends through a symlink: example")
+        , (SnapshotPathThroughRegularFile "example", "path descends through a regular file: example")
+        , (SnapshotMissingParentDirectory "example", "missing parent directory: example")
+        ]
+  forM_ examples $ \(problem, expected) -> do
+    assertEqual "rendered error" expected (renderError problem)
+    assertEqual "exception display" expected (displayException problem)
+  let check args expected = do
+        result <- readProcessWithExitCode "foldback" args ""
+        assertEqual "exact subprocess result" (ExitFailure 1, "", expected <> "\n") result
+  check ["backup", source, "--repo", repository, "--name", "daily"] "snapshot already exists: daily"
+  check ["restore", "missing", target, "--repo", repository] "snapshot does not exist: missing"
+  forM_ [ (["list", "--repo", ""], "--repo cannot be empty")
+        , (["list"], "--repo is required")
+        , (["list", "--repo"], "--repo requires a value")
+        , (["list", "--repo", "a", "--repo", "b"], "--repo may only be supplied once")
+        , (["list", "--name", "x"], "--name is only valid for backup")
+        , (["backup"], "backup requires one SOURCE")
+        , (["restore"], "restore requires SNAPSHOT and TARGET")
+        , (["list", "--unknown"], "unknown option: --unknown")
+        ] $ \(args, expected) -> check args expected
+  Posix.createNamedPipe fifo Posix.ownerReadMode
+  scanner <- try (scanSourceTree source (\_ -> error "unexpected file")) :: IO (Either FoldbackError Summary)
+  assertEqual "scanner constructor" (Left (UnsupportedFilesystemEntry fifo)) scanner
+  let missing = sandbox </> "missing"
+  osError <- try (scanSourceTree missing (\_ -> error "unexpected file")) :: IO (Either IOException Summary)
+  case osError of
+    Left _ -> pure ()
+    Right _ -> error "missing source should raise an IOException"
+  let blocked = sandbox </> "blocked"
+  writeFile blocked "file"
+  ioResult <- try (createOrOpenRepository (blocked </> "repo")) :: IO (Either IOException Repository)
+  case ioResult of
+    Left problem -> check ["backup", source, "--repo", blocked </> "repo"] (displayException problem)
+    Right _ -> error "expected operating system error"
+
 testLibraryBackupPreparation :: IO ()
 testLibraryBackupPreparation = withTemporaryDirectory "foldback-library-backup" $ \sandbox -> do
   let repositoryPath = sandbox </> "repository"
       source = sandbox </> "source"
   createDirectory source
   forM_ [(Just "-bad", source), (Nothing, sandbox </> "missing")] $ \(name, path) -> do
-    result <- try (backup repositoryPath name path) :: IO (Either IOException BackupReceipt)
+    result <- try (backup repositoryPath name path) :: IO (Either FoldbackError BackupReceipt)
     case result of
       Left _ -> pure ()
       Right _ -> fail "invalid backup request was accepted"
@@ -163,7 +250,7 @@ testOpenRejectsSnapshotsOnlyRepository = withTemporaryDirectory "foldback-snapsh
   createDirectory (repositoryPath </> "snapshots")
   writeFile (repositoryPath </> "snapshots" </> "unopened") "snapshot data"
 
-  openResult <- try (openRepository repositoryPath) :: IO (Either IOException Repository)
+  openResult <- try (openRepository repositoryPath) :: IO (Either FoldbackError Repository)
   case openResult of
     Left exception ->
       assertBool
@@ -219,11 +306,11 @@ testOpenRejectsEmptyPath :: IO ()
 testOpenRejectsEmptyPath = do
   assertRepositoryOpenFails
     "create-or-open rejects an empty repository path"
-    "--repo cannot be empty"
+    "repository path cannot be empty"
     (createOrOpenRepository "")
   assertRepositoryOpenFails
     "read open rejects an empty repository path"
-    "--repo cannot be empty"
+    "repository path cannot be empty"
     (openRepository "")
 
 testScanSourceTree :: IO ()
@@ -871,7 +958,7 @@ testValidatesEmptyRestoreTargetFirst = withTemporaryDirectory "foldback-empty-ta
   let workingDirectory = sandbox </> "work"
       insideRepository = workingDirectory </> "repository"
       outsideRepository = sandbox </> "outside-repository"
-      expected = Left "user error (restore target cannot be empty)\n"
+      expected = Left "restore target cannot be empty\n"
   createDirectory workingDirectory
   _ <- createOrOpenRepository insideRepository
   _ <- createOrOpenRepository outsideRepository
@@ -1292,7 +1379,7 @@ testRejectsSymlinkTraversalOrderIndependent = do
   -- 2. Child after symlink must fail with "path descends through a symlink: <path>"
   resultAfterFile <- try (validatePaths [linkEntry, childFile])
   case resultAfterFile of
-    Left (e :: SomeException) ->
+    Left (e :: FoldbackError) ->
       assertBool "child file after symlink error message" ("path descends through a symlink: link/child" `isInfixOf` displayException e)
     Right () ->
       error "expected validation failure when child file is after symlink, but it passed"
@@ -1300,7 +1387,7 @@ testRejectsSymlinkTraversalOrderIndependent = do
   -- 3. Child before symlink must fail with "path descends through a symlink: <path>"
   resultBeforeFile <- try (validatePaths [childFile, linkEntry])
   case resultBeforeFile of
-    Left (e :: SomeException) ->
+    Left (e :: FoldbackError) ->
       assertBool "child file before symlink error message" ("path descends through a symlink: link/child" `isInfixOf` displayException e)
     Right () ->
       error "expected validation failure when child file is before symlink, but it passed"
@@ -1308,7 +1395,7 @@ testRejectsSymlinkTraversalOrderIndependent = do
   -- 4. Child directory before symlink must fail with "path descends through a symlink: <path>"
   resultBeforeDir <- try (validatePaths [childDir, linkEntry])
   case resultBeforeDir of
-    Left (e :: SomeException) ->
+    Left (e :: FoldbackError) ->
       assertBool "child dir before symlink error message" ("path descends through a symlink: link/sub" `isInfixOf` displayException e)
     Right () ->
       error "expected validation failure when child dir is before symlink, but it passed"
@@ -1317,14 +1404,14 @@ testRejectsSymlinkTraversalOrderIndependent = do
   let nestedLink = SymbolicLink "link/nested" "target2"
   resultNestedAfter <- try (validatePaths [linkEntry, nestedLink])
   case resultNestedAfter of
-    Left (e :: SomeException) ->
+    Left (e :: FoldbackError) ->
       assertBool "nested symlink after error message" ("path descends through a symlink: link/nested" `isInfixOf` displayException e)
     Right () ->
       error "expected validation failure when nested symlink is after symlink, but it passed"
 
   resultNestedBefore <- try (validatePaths [nestedLink, linkEntry])
   case resultNestedBefore of
-    Left (e :: SomeException) ->
+    Left (e :: FoldbackError) ->
       assertBool "nested symlink before error message" ("path descends through a symlink: link/nested" `isInfixOf` displayException e)
     Right () ->
       error "expected validation failure when nested symlink is before symlink, but it passed"
@@ -1371,7 +1458,7 @@ testRejectsIncoherentDirectoryTrees = do
   -- 1. Nested file path without parent Directory entry must fail validation
   resultMissingParentFile <- try (validatePaths [RegularFile "docs/guide.txt" dummyDigest 10])
   case resultMissingParentFile of
-    Left (e :: SomeException) ->
+    Left (e :: FoldbackError) ->
       assertBool "missing parent for file error" ("missing parent directory" `isInfixOf` displayException e)
     Right () ->
       error "expected validation failure when file parent directory is missing, but it passed"
@@ -1379,7 +1466,7 @@ testRejectsIncoherentDirectoryTrees = do
   -- 2. Nested directory path without parent Directory entry must fail validation
   resultMissingParentDir <- try (validatePaths [Directory "docs/sub"])
   case resultMissingParentDir of
-    Left (e :: SomeException) ->
+    Left (e :: FoldbackError) ->
       assertBool "missing parent for dir error" ("missing parent directory" `isInfixOf` displayException e)
     Right () ->
       error "expected validation failure when dir parent directory is missing, but it passed"
@@ -1387,7 +1474,7 @@ testRejectsIncoherentDirectoryTrees = do
   -- 3. Out-of-order Directory entry appearing after its child must fail validation
   resultOutOfOrder <- try (validatePaths [Directory "docs/sub", Directory "docs"])
   case resultOutOfOrder of
-    Left (e :: SomeException) ->
+    Left (e :: FoldbackError) ->
       assertBool "out of order directory error" ("missing parent directory" `isInfixOf` displayException e)
     Right () ->
       error "expected validation failure when directory appears after child, but it passed"
@@ -1395,14 +1482,14 @@ testRejectsIncoherentDirectoryTrees = do
   -- 4. RegularFile as an ancestor prefix of a Directory must fail validation (both orders)
   resultFilePrefixDir <- try (validatePaths [RegularFile "docs" dummyDigest 10, Directory "docs/sub"])
   case resultFilePrefixDir of
-    Left (e :: SomeException) ->
+    Left (e :: FoldbackError) ->
       assertBool "regular file prefix of dir error" ("path descends through a regular file: docs/sub" `isInfixOf` displayException e)
     Right () ->
       error "expected validation failure when regular file is ancestor of dir, but it passed"
 
   resultFilePrefixDirRev <- try (validatePaths [Directory "docs/sub", RegularFile "docs" dummyDigest 10])
   case resultFilePrefixDirRev of
-    Left (e :: SomeException) ->
+    Left (e :: FoldbackError) ->
       assertBool "out of order regular file prefix of dir error" ("path descends through a regular file: docs/sub" `isInfixOf` displayException e)
     Right () ->
       error "expected validation failure when dir precedes regular file ancestor, but it passed"
@@ -1410,14 +1497,14 @@ testRejectsIncoherentDirectoryTrees = do
   -- 5. RegularFile as an ancestor prefix of another RegularFile must fail validation (both orders)
   resultFilePrefixFile <- try (validatePaths [RegularFile "docs" dummyDigest 10, RegularFile "docs/child.txt" dummyDigest 5])
   case resultFilePrefixFile of
-    Left (e :: SomeException) ->
+    Left (e :: FoldbackError) ->
       assertBool "regular file prefix of file error" ("path descends through a regular file: docs/child.txt" `isInfixOf` displayException e)
     Right () ->
       error "expected validation failure when regular file is ancestor of file, but it passed"
 
   resultFilePrefixFileRev <- try (validatePaths [RegularFile "docs/child.txt" dummyDigest 5, RegularFile "docs" dummyDigest 10])
   case resultFilePrefixFileRev of
-    Left (e :: SomeException) ->
+    Left (e :: FoldbackError) ->
       assertBool "out of order regular file prefix of file error" ("path descends through a regular file: docs/child.txt" `isInfixOf` displayException e)
     Right () ->
       error "expected validation failure when file precedes regular file ancestor, but it passed"
@@ -1514,7 +1601,7 @@ testRejectsIncoherentDirectoryTrees = do
 testRejectsTrailingSlashSnapshotPaths :: IO ()
 testRejectsTrailingSlashSnapshotPaths = do
   let trailingSlashEntries = [Directory "folder", Directory "folder/"]
-  validationResult <- try (validatePaths trailingSlashEntries) :: IO (Either IOException ())
+  validationResult <- try (validatePaths trailingSlashEntries) :: IO (Either FoldbackError ())
   case validationResult of
     Left exception ->
       assertBool
@@ -1642,7 +1729,7 @@ assertBool label condition = unless condition (error label)
 
 assertRepositoryOpenFails :: String -> String -> IO Repository -> IO ()
 assertRepositoryOpenFails label expectedMessage open = do
-  result <- try open :: IO (Either IOException Repository)
+  result <- try open :: IO (Either FoldbackError Repository)
   case result of
     Left exception ->
       assertBool label (expectedMessage `isInfixOf` displayException exception)
