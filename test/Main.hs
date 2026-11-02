@@ -4,7 +4,7 @@ import Control.Concurrent (forkIO, killThread, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (IOException, SomeException, bracket, displayException, try)
 import Control.Monad (forM_, unless, when)
 import qualified Crypto.Hash.SHA256 as SHA256
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf, isPrefixOf)
 import GHC.Clock (getMonotonicTime)
 import qualified Data.ByteString as BS
@@ -24,6 +24,7 @@ import Foldback.Repository
   , writeManifestDigest
   , writeSnapshot
   )
+import Foldback.TreeScanner (scanSourceTree)
 import Numeric (showHex)
 import Properties (propertyTests)
 import qualified System.Posix.Files as Posix
@@ -57,13 +58,14 @@ main = do
 
 tests :: [(String, IO ())]
 tests =
-  [ ("derive manifest", testDerivesManifest)
+  [ ("scan source tree", testScanSourceTree)
   , ("create-or-open repository writes the stable layout", testCreateOrOpenRepository)
   , ("read open rejects snapshots-only repository without creating layout", testOpenRejectsSnapshotsOnlyRepository)
   , ("both open modes reject unsupported format", testOpenRejectsUnsupportedFormat)
   , ("both open modes reject an empty path", testOpenRejectsEmptyPath)
   , ("read open rejects an incomplete repository layout", testOpenRejectsIncompleteLayout)
   , ("library backup prepares before repository creation", testLibraryBackupPreparation)
+  , ("backup manifest traversal order", testBackupManifestTraversalOrder)
   , ("backup and restore", testBackupAndRestore)
   , ("list and verify", testListAndVerify)
   , ("list and verify many snapshots", testListAndVerifyManySnapshots)
@@ -224,36 +226,59 @@ testOpenRejectsEmptyPath = do
     "--repo cannot be empty"
     (openRepository "")
 
-testDerivesManifest :: IO ()
-testDerivesManifest =
-  assertEqual
-    "a filesystem fold derives pre-order entries and totals"
-    ( Summary
-        { entries =
-            [ Directory "."
-            , Directory "docs"
-            , RegularFile "docs/guide.txt" (Digest "abc") 12
-            , SymbolicLink "latest" "docs/guide.txt"
-            ]
-        , fileCount = 1
-        , totalBytes = 12
-        , objects = Set.singleton (Digest "abc")
-        }
-    )
-    ( deriveManifest
-        ( Fix
-            ( DirectoryF
-                "."
-                [ Fix
-                    ( DirectoryF
-                        "docs"
-                        [Fix (RegularFileF "docs/guide.txt" (Digest "abc") 12)]
-                    )
-                , Fix (SymbolicLinkF "latest" "docs/guide.txt")
-                ]
-            )
-        )
-    )
+testScanSourceTree :: IO ()
+testScanSourceTree = withTemporaryDirectory "foldback-scanner" $ \source -> do
+  createDirectory (source </> "docs")
+  createDirectory (source </> "empty")
+  writeFile (source </> "docs" </> "guide.txt") "hello"
+  writeFile (source </> "copy") "hello"
+  writeFile (source </> "z") "bye"
+  createFileLink "docs/guide.txt" (source </> "latest")
+  calls <- newIORef []
+  summary <- scanSourceTree source $ \path -> do
+    modifyIORef' calls (<> [path])
+    content <- readFile path
+    case content of
+      "hello" -> pure (Digest "abc", 5)
+      "bye" -> pure (Digest "xyz", 3)
+      _ -> fail "unexpected file content"
+  assertEqual "sorted traversal and accounting"
+    (Summary
+      [ Directory "."
+      , RegularFile "copy" (Digest "abc") 5
+      , Directory "docs"
+      , RegularFile "docs/guide.txt" (Digest "abc") 5
+      , Directory "empty"
+      , SymbolicLink "latest" "docs/guide.txt"
+      , RegularFile "z" (Digest "xyz") 3
+      ] 3 13 (Set.fromList [Digest "abc", Digest "xyz"]))
+    summary
+  paths <- readIORef calls
+  assertEqual "each regular file is ingested in traversal order"
+    [source </> "copy", source </> "docs" </> "guide.txt", source </> "z"] paths
+
+testBackupManifestTraversalOrder :: IO ()
+testBackupManifestTraversalOrder = withTemporaryDirectory "foldback-traversal" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repositoryPath = sandbox </> "repository"
+  createDirectory source
+  createDirectory (source </> "b")
+  createDirectory (source </> "a")
+  writeFile (source </> "b" </> "copy") "hello"
+  writeFile (source </> "a" </> "file") "hello"
+  createFileLink "b/copy" (source </> "c")
+  _ <- backup repositoryPath (Just "first") source
+  repository <- openRepository repositoryPath
+  snapshots <- loadCommittedSnapshots repository
+  case snapshots of
+    [("first", snapshot)] -> do
+      let digest = Digest "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+      assertEqual "sorted pre-order manifest"
+        [Directory ".", Directory "a", RegularFile "a/file" digest 5, Directory "b", RegularFile "b/copy" digest 5, SymbolicLink "c" "b/copy"]
+        (snapshotEntries snapshot)
+      assertEqual "file count" 2 (snapshotFileCount snapshot)
+      assertEqual "total bytes" 10 (snapshotTotalBytes snapshot)
+    _ -> fail "expected one committed snapshot"
 
 testBackupAndRestore :: IO ()
 testBackupAndRestore = withTemporaryDirectory "foldback-test" $ \sandbox -> do

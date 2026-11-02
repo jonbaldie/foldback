@@ -113,7 +113,7 @@ At its core, Foldback treats filesystem trees and backup operations through the 
 
 ### The Algebraic Derivation
 
-The derivation starts with a polynomial base functor `FsF` for an unfixed filesystem tree:
+The conceptual derivation starts with a polynomial base functor `FsF` for an unfixed filesystem tree. These types describe the model, not the current implementation:
 
 ```haskell
 data FsF a
@@ -138,17 +138,7 @@ phi (RegularFileF p h n)   = file(p, h, n)
 phi (SymbolicLinkF p dest) = link(p, dest)
 ```
 
-Here `<>` is the product monoid of pre-order entry lists, total file count, total byte count, and the set of content digests. Associativity means arbitrary subtrees can be summarized independently; the empty directory supplies the monoidal identity. The implementation in `Foldback.Algebra` is this exact equation directly transcribed into Haskell.
-
-The operational backup pipeline factors cleanly as:
-
-```text
-backup = commit . cata phi <=< scan-and-store
-```
-
-- **`scan-and-store`** is the effectful coalgebraic edge: it traverses physical directory structure and streams regular files into content-addressed object storage.
-- **`cata phi`** is the pure mathematical center: it eliminates recursion while deriving the complete manifest and accounting totals in one pass.
-- **`commit`** is the effectful closing edge: it atomically writes and installs the resulting snapshot manifest.
+Here `<>` combines pre-order entry lists, total file count, total byte count, and the set of content digests. The current `Foldback.TreeScanner` computes the same summary directly during sorted traversal. It passes regular files to an object-ingestion callback rather than constructing a separate tree before folding it. The backup operation then publishes the snapshot manifest.
 
 ### Content Addressing as a Homomorphism
 
@@ -163,4 +153,4 @@ That is the practical payoff of the algebraic view:
 - Storage demand is a **set homomorphism**.
 - File and byte accounting is a **numeric homomorphism**.
 
-All three properties are computed simultaneously by a single fold over the same recursive value.
+The scanner computes all three properties during the same filesystem traversal.

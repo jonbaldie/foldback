@@ -32,6 +32,7 @@ import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.Word (Word8)
 import Foldback.Algebra
+import Foldback.TreeScanner (scanSourceTree)
 import Numeric (showHex)
 import System.Directory
   ( canonicalizePath
@@ -161,8 +162,7 @@ backup repositoryPath requestedName unnormalisedSource = do
   withSnapshotNameReservation snapshotPath name $ do
     collision <- doesPathExist snapshotPath
     when collision (ioError (userError ("snapshot already exists: " <> name)))
-    tree <- scanTree repository source "."
-    let summary = deriveManifest tree
+    summary <- scanSourceTree source (storeObject repository)
     createdAt <- floor <$> getPOSIXTime
     let snapshot =
           Snapshot
@@ -393,29 +393,6 @@ hasCommittedSnapshotEvidence repository name = do
       pure $ case parsed of
         Right snapshot -> snapshotName snapshot == name
         Left _ -> False
-
-scanTree :: Repository -> FilePath -> FilePath -> IO (Fix FsF)
-scanTree repository source relative = do
-  let absolute = if relative == "." then source else source </> relative
-  status <- Posix.getSymbolicLinkStatus absolute
-  if Posix.isSymbolicLink status
-    then Fix . SymbolicLinkF relative <$> Posix.readSymbolicLink absolute
-    else
-      if Posix.isDirectory status
-        then do
-          childNames <- sort <$> listDirectory absolute
-          children <- mapM (scanTree repository source . childPath relative) childNames
-          pure (Fix (DirectoryF relative children))
-        else
-          if Posix.isRegularFile status
-            then do
-              (digest, size) <- storeObject repository absolute
-              pure (Fix (RegularFileF relative digest size))
-            else ioError (userError ("unsupported filesystem entry: " <> absolute))
-
-childPath :: FilePath -> FilePath -> FilePath
-childPath "." child = child
-childPath parent child = parent </> child
 
 storeObject :: Repository -> FilePath -> IO (Digest, Integer)
 storeObject repository source = do
