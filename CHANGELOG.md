@@ -1,5 +1,10 @@
 # Revision history for foldback
 
+## 0.1.9.0 -- 2026-11-05
+
+* Report typed repository errors without the `user error` wrapper in CLI output.
+* Scan backup sources directly into manifest summaries without an intermediate tree.
+
 ## 0.1.8.0 -- 2026-10-28
 
 * Validate backup arguments and source before opening the repository, so invalid
