@@ -1,0 +1,173 @@
+Registered container=foldback-explore-20261105-cli image=foldback-dev-35-independent:latest, no published ports or named volumes
+Image ID: sha256:9f0c7e2b603f72581ff7892e456279d104ffc8e2b5a339f6e6150f802d533c6e
+0cc2757c65a1c3cd9fc9b89b70a722353188507d4050b2b087ef291eb381082b
+Container init PID: 1946615
+Running cabal build exe:foldback --offline
+Configuration is affected by the following files:
+- cabal.project
+Resolving dependencies...
+Build profile: -w ghc-9.12.2 -O1
+In order, the following will be built (use -v for more details):
+ - foldback-0.1.9.0 (lib) (first run)
+ - foldback-0.1.9.0 (exe:foldback) (first run)
+Configuring library for foldback-0.1.9.0...
+Preprocessing library for foldback-0.1.9.0...
+Building library for foldback-0.1.9.0...
+[1 of 6] Compiling Foldback.Algebra ( src/Foldback/Algebra.hs, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/build/Foldback/Algebra.o, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/build/Foldback/Algebra.dyn_o )
+[2 of 6] Compiling Foldback.Error   ( src/Foldback/Error.hs, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/build/Foldback/Error.o, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/build/Foldback/Error.dyn_o )
+[3 of 6] Compiling Foldback.TreeScanner ( src/Foldback/TreeScanner.hs, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/build/Foldback/TreeScanner.o, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/build/Foldback/TreeScanner.dyn_o )
+[4 of 6] Compiling Foldback.Repository ( src/Foldback/Repository.hs, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/build/Foldback/Repository.o, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/build/Foldback/Repository.dyn_o )
+[5 of 6] Compiling Paths_foldback   ( dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/build/autogen/Paths_foldback.hs, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/build/Paths_foldback.o, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/build/Paths_foldback.dyn_o )
+[6 of 6] Compiling Foldback         ( src/Foldback.hs, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/build/Foldback.o, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/build/Foldback.dyn_o )
+Configuring executable 'foldback' for foldback-0.1.9.0...
+Preprocessing executable 'foldback' for foldback-0.1.9.0...
+Building executable 'foldback' for foldback-0.1.9.0...
+[1 of 1] Compiling Main             ( app/Main.hs, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback-tmp/Main.o )
+[2 of 2] Linking dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback
+Running cabal test foldback-test --offline --test-show-details=always
+Configuration is affected by the following files:
+- cabal.project
+Build profile: -w ghc-9.12.2 -O1
+In order, the following will be built (use -v for more details):
+ - foldback-0.1.9.0 (test:foldback-test) (first run)
+Configuring test suite 'foldback-test' for foldback-0.1.9.0...
+Preprocessing test suite 'foldback-test' for foldback-0.1.9.0...
+Building test suite 'foldback-test' for foldback-0.1.9.0...
+[1 of 2] Compiling Properties       ( test/Properties.hs, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/t/foldback-test/build/foldback-test/foldback-test-tmp/Properties.o )
+[2 of 2] Compiling Main             ( test/Main.hs, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/t/foldback-test/build/foldback-test/foldback-test-tmp/Main.o )
+[3 of 3] Linking dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/t/foldback-test/build/foldback-test/foldback-test
+Running 1 test suites...
+Test suite foldback-test: RUNNING...
+PASS typed errors and exact CLI output
+PASS scan source tree
+PASS create-or-open repository writes the stable layout
+PASS read open rejects snapshots-only repository without creating layout
+PASS both open modes reject unsupported format
+PASS both open modes reject an empty path
+PASS read open rejects an incomplete repository layout
+PASS library backup prepares before repository creation
+PASS backup manifest traversal order
+PASS backup and restore
+PASS list and verify
+PASS list and verify many snapshots
+PASS detect corruption
+PASS detect missing objects
+PASS detect wrong object sizes
+PASS backup trusts content address on dedup hit
+PASS hard links deduplicate and restore separately
+PASS restore duplicate entries detect corrupt object
+PASS restore duplicate entries detect missing object
+PASS restore duplicate entries detect wrong size
+PASS reject symlink content objects
+PASS reject symlink source roots
+PASS reject optionlike snapshot name
+PASS reject invalid snapshot name before repository initialization
+PASS reject optionlike repository value
+PASS reject optionlike name value
+PASS reject symlink restore targets
+PASS reject symlink restore target ancestors
+PASS reject empty restore target
+PASS validate empty restore target before repository and snapshot checks
+PASS reject empty repository path
+PASS reject empty backup source
+PASS reject --name outside backup
+PASS tolerate foreign metadata files
+PASS detect manifest tampering
+PASS bounds streaming memory
+PASS sidecar installed before manifest
+PASS tolerate incomplete snapshot leftovers
+PASS tolerate POSIX temp-file leftovers
+PASS retain committed POSIX-shaped snapshot names
+PASS reject unrelated invalid artifacts
+PASS atomic digest sidecar staging
+PASS concurrent same snapshot name
+PASS reject symlink traversal order independent
+PASS reject incoherent directory trees
+PASS reject trailing-slash snapshot paths
+PASS path validation scales subquadratically
+PASS help
+PASS property tests
+
+Test suite foldback-test: PASS
+Test suite logged to:
+/workspace/./dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/t/foldback-test/test/foldback-0.1.9.0-foldback-test.log
+1 of 1 test suites (1 of 1 test cases) passed.
+Running CLI journeys
+Configuration is affected by the following files:
+- cabal.project
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback --help
+usage:
+  foldback backup SOURCE --repo REPOSITORY [--name NAME]
+  foldback restore SNAPSHOT TARGET --repo REPOSITORY
+  foldback list --repo REPOSITORY
+  foldback verify --repo REPOSITORY
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback backup /workspace/.explore-20261105/source --repo /workspace/.explore-20261105/repo --name first
+snapshot first: 2 files, 18 bytes
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback list --repo /workspace/.explore-20261105/repo
+first	2 files	18 bytes
+++ find /workspace/.explore-20261105/repo/objects -type f
+++ wc -l
++ test 1 -eq 1
++ printf 'changed\n'
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback backup /workspace/.explore-20261105/source --repo /workspace/.explore-20261105/repo --name second
+snapshot second: 2 files, 17 bytes
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback list --repo /workspace/.explore-20261105/repo
+first	2 files	18 bytes
+second	2 files	17 bytes
+++ find /workspace/.explore-20261105/repo/objects -type f
+++ wc -l
++ test 2 -eq 2
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback backup /workspace/.explore-20261105/source --repo /workspace/.explore-20261105/repo --name first
+snapshot already exists: first
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback verify --repo /workspace/.explore-20261105/repo
+verified 2 snapshots, 2 objects
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback restore first /workspace/.explore-20261105/restored --repo /workspace/.explore-20261105/repo
+restored first to /workspace/.explore-20261105/restored
+++ cat /workspace/.explore-20261105/restored/a
++ test original = original
+++ cat /workspace/.explore-20261105/restored/sub/copy
++ test original = original
+++ readlink /workspace/.explore-20261105/restored/sub/link
++ test ../a = ../a
++ test -d /workspace/.explore-20261105/restored/empty
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback restore second /workspace/.explore-20261105/restored --repo /workspace/.explore-20261105/repo
+restore target is not empty: /workspace/.explore-20261105/restored
+++ cat /workspace/.explore-20261105/restored/a
++ test original = original
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback restore second /workspace/.explore-20261105/restored2 --repo /workspace/.explore-20261105/repo
+restored second to /workspace/.explore-20261105/restored2
+++ cat /workspace/.explore-20261105/restored2/a
++ test changed = changed
++ ln -s /workspace/.explore-20261105/outside /workspace/.explore-20261105/link
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback restore first /workspace/.explore-20261105/link/new --repo /workspace/.explore-20261105/repo
+restore target is not a directory: /workspace/.explore-20261105/link/new
++ test '!' -e /workspace/.explore-20261105/outside/new
+++ printf 'changed\n'
+++ sha256sum
+++ cut '-d ' -f1
++ object=7f8b1dfc466b6249f06cbe55c9174df2578e7754da793fded244ef5cba2a38f1
++ printf corrupt
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback verify --repo /workspace/.explore-20261105/repo
+corrupt object: 7f8b1dfc466b6249f06cbe55c9174df2578e7754da793fded244ef5cba2a38f1
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback restore second /workspace/.explore-20261105/corrupt-target --repo /workspace/.explore-20261105/repo
+corrupt object: 7f8b1dfc466b6249f06cbe55c9174df2578e7754da793fded244ef5cba2a38f1
++ test -d /workspace/.explore-20261105/corrupt-target
++ find /workspace/.explore-20261105/corrupt-target -mindepth 1 -print
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback restore first /workspace/.explore-20261105/unaffected --repo /workspace/.explore-20261105/repo
+restored first to /workspace/.explore-20261105/unaffected
+++ cat /workspace/.explore-20261105/unaffected/a
++ test original = original
++ printf 'changed\n'
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback verify --repo /workspace/.explore-20261105/repo
+verified 2 snapshots, 2 objects
++ /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback restore second /workspace/.explore-20261105/repaired --repo /workspace/.explore-20261105/repo
+restored second to /workspace/.explore-20261105/repaired
+++ cat /workspace/.explore-20261105/repaired/a
++ test changed = changed
++ set +x
+All journey assertions passed
+Cleanup checks:
+container absent
+container PID 1946615 absent
+container PID owns no listening ports
+no run-named volumes or images, scratch, or build directories
