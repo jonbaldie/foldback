@@ -7,7 +7,8 @@ G=$(git rev-parse --path-format=absolute --git-common-dir)
 PID=''
 cleanup() {
   docker rm -f "$N" >/dev/null 2>&1 || true
-  sudo rm -rf "$W/.explore-20261105" "$W/dist-newstyle" "$W/dist-cov"
+  sudo rm -rf "$W/.explore-20261105"
+  for p in dist-newstyle dist-cov; do if [ -d "$W/$p" ]; then sudo rmdir "$W/$p"; fi; done
   echo 'Cleanup checks:'
   if docker container inspect "$N" >/dev/null 2>&1; then echo 'container remains'; return 1; fi
   echo 'container absent'
@@ -21,6 +22,9 @@ cleanup() {
   echo 'no run-named volumes or images, scratch, or build directories'
 }
 if docker container inspect "$N" >/dev/null 2>&1; then echo 'container name already taken'; exit 1; fi
+for p in .explore-20261105 dist-newstyle dist-cov; do
+  if [ -e "$W/$p" ] || [ -L "$W/$p" ]; then echo "refusing existing path: $W/$p"; exit 1; fi
+done
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM

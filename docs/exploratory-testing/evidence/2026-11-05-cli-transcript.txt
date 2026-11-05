@@ -1,7 +1,7 @@
 Registered container=foldback-explore-20261105-cli image=foldback-dev-35-independent:latest, no published ports or named volumes
 Image ID: sha256:9f0c7e2b603f72581ff7892e456279d104ffc8e2b5a339f6e6150f802d533c6e
-6074d7e2ac4a5bb841a3475640ab11c4dd68cd5be264379c718299253c38f26a
-Container init PID: 1945028
+0cc2757c65a1c3cd9fc9b89b70a722353188507d4050b2b087ef291eb381082b
+Container init PID: 1946615
 Running cabal build exe:foldback --offline
 Configuration is affected by the following files:
 - cabal.project
@@ -114,8 +114,8 @@ snapshot second: 2 files, 17 bytes
 + /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback list --repo /workspace/.explore-20261105/repo
 first	2 files	18 bytes
 second	2 files	17 bytes
-++ wc -l
 ++ find /workspace/.explore-20261105/repo/objects -type f
+++ wc -l
 + test 2 -eq 2
 + /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback backup /workspace/.explore-20261105/source --repo /workspace/.explore-20261105/repo --name first
 snapshot already exists: first
@@ -163,11 +163,11 @@ verified 2 snapshots, 2 objects
 + /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback restore second /workspace/.explore-20261105/repaired --repo /workspace/.explore-20261105/repo
 restored second to /workspace/.explore-20261105/repaired
 ++ cat /workspace/.explore-20261105/repaired/a
-All journey assertions passed
 + test changed = changed
 + set +x
+All journey assertions passed
 Cleanup checks:
 container absent
-container PID 1945028 absent
+container PID 1946615 absent
 container PID owns no listening ports
 no run-named volumes or images, scratch, or build directories
