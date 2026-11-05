@@ -3,7 +3,10 @@
 ## 0.1.9.0 -- 2026-11-05
 
 * Report typed repository errors without the `user error` wrapper in CLI output.
+  Library callers must catch `FoldbackError` for domain errors instead of `IOException`.
 * Scan backup sources directly into manifest summaries without an intermediate tree.
+  The exposed `Foldback.Algebra` module no longer exports `FsF`, `Fix`, `cata`, or
+  `deriveManifest`.
 
 ## 0.1.8.0 -- 2026-10-28
 
