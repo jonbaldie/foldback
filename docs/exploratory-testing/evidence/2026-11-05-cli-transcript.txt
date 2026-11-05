@@ -1,3 +1,8 @@
+Registered container=foldback-explore-20261105-cli image=foldback-dev-35-independent:latest, no published ports or named volumes
+Image ID: sha256:9f0c7e2b603f72581ff7892e456279d104ffc8e2b5a339f6e6150f802d533c6e
+6074d7e2ac4a5bb841a3475640ab11c4dd68cd5be264379c718299253c38f26a
+Container init PID: 1945028
+Running cabal build exe:foldback --offline
 Configuration is affected by the following files:
 - cabal.project
 Resolving dependencies...
@@ -19,6 +24,7 @@ Preprocessing executable 'foldback' for foldback-0.1.9.0...
 Building executable 'foldback' for foldback-0.1.9.0...
 [1 of 1] Compiling Main             ( app/Main.hs, dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback-tmp/Main.o )
 [2 of 2] Linking dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback
+Running cabal test foldback-test --offline --test-show-details=always
 Configuration is affected by the following files:
 - cabal.project
 Build profile: -w ghc-9.12.2 -O1
@@ -86,6 +92,7 @@ Test suite foldback-test: PASS
 Test suite logged to:
 /workspace/./dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/t/foldback-test/test/foldback-0.1.9.0-foldback-test.log
 1 of 1 test suites (1 of 1 test cases) passed.
+Running CLI journeys
 Configuration is affected by the following files:
 - cabal.project
 + /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback --help
@@ -107,8 +114,8 @@ snapshot second: 2 files, 17 bytes
 + /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback list --repo /workspace/.explore-20261105/repo
 first	2 files	18 bytes
 second	2 files	17 bytes
-++ find /workspace/.explore-20261105/repo/objects -type f
 ++ wc -l
+++ find /workspace/.explore-20261105/repo/objects -type f
 + test 2 -eq 2
 + /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback backup /workspace/.explore-20261105/source --repo /workspace/.explore-20261105/repo --name first
 snapshot already exists: first
@@ -144,6 +151,8 @@ restore target is not a directory: /workspace/.explore-20261105/link/new
 corrupt object: 7f8b1dfc466b6249f06cbe55c9174df2578e7754da793fded244ef5cba2a38f1
 + /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback restore second /workspace/.explore-20261105/corrupt-target --repo /workspace/.explore-20261105/repo
 corrupt object: 7f8b1dfc466b6249f06cbe55c9174df2578e7754da793fded244ef5cba2a38f1
++ test -d /workspace/.explore-20261105/corrupt-target
++ find /workspace/.explore-20261105/corrupt-target -mindepth 1 -print
 + /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback restore first /workspace/.explore-20261105/unaffected --repo /workspace/.explore-20261105/repo
 restored first to /workspace/.explore-20261105/unaffected
 ++ cat /workspace/.explore-20261105/unaffected/a
@@ -154,6 +163,11 @@ verified 2 snapshots, 2 objects
 + /workspace/dist-newstyle/build/x86_64-linux/ghc-9.12.2/foldback-0.1.9.0/x/foldback/build/foldback/foldback restore second /workspace/.explore-20261105/repaired --repo /workspace/.explore-20261105/repo
 restored second to /workspace/.explore-20261105/repaired
 ++ cat /workspace/.explore-20261105/repaired/a
+All journey assertions passed
 + test changed = changed
 + set +x
-All journey assertions passed
+Cleanup checks:
+container absent
+container PID 1945028 absent
+container PID owns no listening ports
+no run-named volumes or images, scratch, or build directories

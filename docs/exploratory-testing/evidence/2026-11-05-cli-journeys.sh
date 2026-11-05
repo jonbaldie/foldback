@@ -35,6 +35,7 @@ object=$(printf 'changed\n' | sha256sum | cut -d' ' -f1)
 printf corrupt > "$D/repo/objects/$object"
 if "$F" verify --repo "$D/repo"; then exit 14; fi
 if "$F" restore second "$D/corrupt-target" --repo "$D/repo"; then exit 15; fi
+if test -d "$D/corrupt-target"; then find "$D/corrupt-target" -mindepth 1 -print; else echo 'corrupt target absent'; fi
 "$F" restore first "$D/unaffected" --repo "$D/repo"
 test "$(cat "$D/unaffected/a")" = original
 printf 'changed\n' > "$D/repo/objects/$object"
