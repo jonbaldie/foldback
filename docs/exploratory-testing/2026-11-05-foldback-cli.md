@@ -1,0 +1,19 @@
+# Foldback CLI exploratory pass
+
+Date: 2026-11-05. Tested Foldback 0.1.9.0 at commit `c5653b30ce5c14929683ac479e952446bbd3e694` on Linux with GHC 9.12.2. The source tree, repository, and restore targets were isolated in a disposable worktree. The [driving script](evidence/2026-11-05-cli-journeys.sh) and [transcript](evidence/2026-11-05-cli-transcript.txt) record the commands and assertions. The script deletes `.explore-20261105` at startup. Run it only in a disposable checkout and the documented development container.
+
+The project has no dependency lockfile, so a frozen install was not possible. The pass reused an existing development image, `foldback-dev-35-independent:latest`, with image ID `sha256:9f0c7e2b603f72581ff7892e456279d104ffc8e2b5a339f6e6150f802d533c6e`. It built and tested offline. The image's dependency resolution is not locked, and its original package index state was not checked. The build output lived in container tmpfs mounts, and the image was not modified or deleted.
+
+## Journeys and results
+
+- **Back up and list snapshots.** A source tree contained two identical files, a symlink, and an empty directory. The first snapshot listed two files and stored one object. After one file changed, a second snapshot listed two files and the repository held two objects. Reusing the first name failed, and restoring that snapshot returned the original content.
+- **Restore a snapshot safely.** The first restore contained both original file bodies, the expected symlink target, and the empty directory. A restore into the nonempty target failed and left the checked file unchanged. A new target received the changed file from the second snapshot. A target beneath a symlink was rejected without creating the requested directory outside the target. This agrees with the resolution of [issue #32](https://github.com/jonbaldie/foldback/issues/32).
+- **Verify and recover from corruption.** Verify reported two snapshots and two objects. After replacing the object unique to the second snapshot with corrupt bytes, verify and restore of the second snapshot both reported the object as corrupt. The first snapshot still restored. Replacing the corrupt bytes with the known original content made verify and a new restore of the second snapshot succeed. This was a controlled test repair, not a documented recovery procedure.
+
+The `foldback-test` suite also passed offline. The pass found no confirmed bugs or unresolved candidates, so it filed no issues. The open and closed issues, labels, comments for relevant path-safety work, open PR, worktrees, and releases were checked before the pass. No suspected product failure required replay.
+
+## Limits and cleanup
+
+The pass did not exercise concurrent operations, interrupted backups, permissions, large data, macOS, or other operating systems. It did not inspect every entry in the target created by the failed corrupt restore. No usability defect was observed in the journeys above.
+
+Before starting the container, the run registered an exit trap that removed it and deleted its scratch and build directories on normal exit or interruption. The container was `foldback-explore-20261105-cli`, with init PID `1943359`. It had no published ports or named volumes. After exit, checks found no matching container, PID, PID-owned listening port, run-named image, named volume, scratch directory, or build directory. No browser was started. The pre-existing development image and unrelated Docker resources were left intact.
