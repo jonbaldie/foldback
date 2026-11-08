@@ -568,18 +568,15 @@ validDigest digest =
 validatePaths :: [ManifestEntry] -> IO ()
 validatePaths manifestEntries = void (foldM validate (Set.empty, Set.singleton ".") manifestEntries)
  where
-  -- Index each descent target by its separator-terminated form, the prefix
-  -- 'isPathPrefixOf' matches against, so each entry probes its own ancestor
-  -- prefixes instead of scanning every symlink and regular file.
-  symlinks = Set.fromList [addTrailingPathSeparator path | SymbolicLink path _ <- manifestEntries]
-  regularFiles = Set.fromList [addTrailingPathSeparator path | RegularFile path _ _ <- manifestEntries]
+  symlinks = foldr insertPath emptyPathIndex [addTrailingPathSeparator path | SymbolicLink path _ <- manifestEntries]
+  regularFiles = foldr insertPath emptyPathIndex [addTrailingPathSeparator path | RegularFile path _ _ <- manifestEntries]
   validate (seen, establishedDirs) entry = do
     let path = entryPath entry
         parent = takeDirectory path
     unless (safeRelativePath path) (throwIO (UnsafeSnapshotPath path))
     when (Set.member path seen) (throwIO (DuplicateSnapshotPath path))
-    when (any (`Set.member` symlinks) (separatorPrefixes path)) (throwIO (SnapshotPathThroughSymlink path))
-    when (any (`Set.member` regularFiles) (separatorPrefixes path)) (throwIO (SnapshotPathThroughRegularFile path))
+    when (hasIndexedPrefix path symlinks) (throwIO (SnapshotPathThroughSymlink path))
+    when (hasIndexedPrefix path regularFiles) (throwIO (SnapshotPathThroughRegularFile path))
     unless (Set.member parent establishedDirs) (throwIO (SnapshotMissingParentDirectory parent))
     let nextEstablishedDirs = case entry of
           Directory dir -> Set.insert dir establishedDirs
@@ -603,10 +600,21 @@ safeRelativePath path =
 isPathPrefixOf :: FilePath -> FilePath -> Bool
 isPathPrefixOf parent child = addTrailingPathSeparator parent `isPrefixOf` child
 
--- Every prefix of a path that ends in a separator: exactly the strings that
--- can satisfy @addTrailingPathSeparator parent `isPrefixOf` path@.
-separatorPrefixes :: FilePath -> [FilePath]
-separatorPrefixes path = [take (index + 1) path | (index, character) <- zip [0 ..] path, isPathSeparator character]
+data PathIndex = PathIndex Bool (Map.Map Char PathIndex)
+
+emptyPathIndex :: PathIndex
+emptyPathIndex = PathIndex False Map.empty
+
+insertPath :: FilePath -> PathIndex -> PathIndex
+insertPath [] (PathIndex _ children) = PathIndex True children
+insertPath (character : rest) (PathIndex terminal children) =
+  PathIndex terminal (Map.alter (Just . insertPath rest . maybe emptyPathIndex id) character children)
+
+hasIndexedPrefix :: FilePath -> PathIndex -> Bool
+hasIndexedPrefix _ (PathIndex True _) = True
+hasIndexedPrefix [] _ = False
+hasIndexedPrefix (character : rest) (PathIndex False children) =
+  maybe False (hasIndexedPrefix rest) (Map.lookup character children)
 
 prepareTarget :: FilePath -> IO ()
 prepareTarget unnormalisedTarget = do
