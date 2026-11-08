@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH= cd -- "$script_dir/../../../../" && pwd)
+tmpdir=$(mktemp -d /tmp/foldback-publication-repro.XXXXXXXX)
+trap 'rm -rf -- "$tmpdir"' EXIT HUP INT TERM
+
+cd "$repo_root"
+ghc_bin=/opt/ghc/9.12.2/bin/ghc
+if [ ! -x "$ghc_bin" ]; then
+  printf '%s\n' "Run this reproducer inside the Foldback development container (GHC 9.12.2)." >&2
+  exit 2
+fi
+
+cabal exec -- "$ghc_bin" -Wall -threaded -rtsopts \
+  -odir "$tmpdir" -hidir "$tmpdir" \
+  -package foldback -o "$tmpdir/repro" \
+  "$script_dir/repro-shared-process.hs"
+"$tmpdir/repro" +RTS -N2
