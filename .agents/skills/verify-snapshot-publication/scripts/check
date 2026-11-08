@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from urllib.request import urlopen
+
+
+ROOT = Path(__file__).resolve().parents[4]
+SKILL = ROOT / ".agents" / "skills" / "verify-snapshot-publication"
+MODEL = SKILL / "model"
+SOURCE = ROOT / "src" / "Foldback" / "Repository.hs"
+TLC_URL = "https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar"
+TLC_SHA256 = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+PUBLICATION_PAIR = re.compile(
+    rb"(?P<digest>writeManifestDigest snapshotPath digest)\n"
+    rb"[ \t]+writeSnapshot snapshotPath snapshot|"
+    rb"(?P<manifest>writeSnapshot snapshotPath snapshot)\n"
+    rb"[ \t]+writeManifestDigest snapshotPath digest"
+)
+
+
+class CheckError(Exception):
+    pass
+
+
+def source_order() -> bool:
+    source = SOURCE.read_bytes()
+    matches = list(PUBLICATION_PAIR.finditer(source))
+    if len(matches) != 1:
+        raise CheckError(
+            "could not identify one adjacent digest/manifest publication pair in "
+            f"{SOURCE.relative_to(ROOT)}; review the source mapping and model"
+        )
+
+    pair = matches[0]
+    digest_first = pair.group("digest") is not None
+    normalized = PUBLICATION_PAIR.sub(b"<publication-order>", source, count=1)
+    actual_hash = hashlib.sha256(normalized).hexdigest()
+    expected_hash = (MODEL / "source.sha256").read_text(encoding="ascii").strip()
+    if actual_hash != expected_hash:
+        raise CheckError(
+            "Repository.hs changed beyond the recognized publication-order swap. "
+            "Review the source mapping and model before updating model/source.sha256. "
+            f"Expected {expected_hash}; found {actual_hash}."
+        )
+
+    order = "digest then manifest" if digest_first else "manifest then digest"
+    print(f"Source mapping: recognized {order}; normalized fingerprint matches.")
+    return digest_first
+
+
+def verified_tlc_jar() -> Path:
+    override = os.environ.get("TLA2TOOLS")
+    jar = (
+        Path(override).expanduser()
+        if override
+        else Path.home() / ".cache" / "foldback-tlc" / "tla2tools-1.7.4.jar"
+    )
+    if jar.is_file():
+        actual_hash = hashlib.sha256(jar.read_bytes()).hexdigest()
+        if actual_hash != TLC_SHA256:
+            raise CheckError(f"TLC jar has the wrong SHA-256: {jar}")
+        return jar
+
+    jar.parent.mkdir(parents=True, exist_ok=True)
+    temporary = jar.with_name(f".{jar.name}.{os.getpid()}.tmp")
+    try:
+        with urlopen(TLC_URL, timeout=60) as response:
+            payload = response.read()
+        actual_hash = hashlib.sha256(payload).hexdigest()
+        if actual_hash != TLC_SHA256:
+            raise CheckError(
+                f"TLC download has the wrong SHA-256: expected {TLC_SHA256}, got {actual_hash}"
+            )
+        temporary.write_bytes(payload)
+        temporary.replace(jar)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return jar
+
+
+def java_binary() -> str:
+    java = shutil.which("java")
+    if not java:
+        raise CheckError("Java 11 or later is required but was not found on PATH.")
+    result = subprocess.run([java, "-version"], capture_output=True, text=True, check=False)
+    version_text = result.stderr + result.stdout
+    match = re.search(r'version "(?:1\.)?(\d+)', version_text)
+    if result.returncode != 0 or not match or int(match.group(1)) < 11:
+        raise CheckError("Java 11 or later is required.")
+    return java
+
+
+def config_text(template: Path, digest_first: bool) -> str:
+    text = template.read_text(encoding="utf-8")
+    replacement = f"  DigestFirst = {'TRUE' if digest_first else 'FALSE'}"
+    updated, count = re.subn(r"(?m)^  DigestFirst = (?:TRUE|FALSE)$", replacement, text)
+    if count != 1:
+        raise CheckError(f"expected one DigestFirst constant in {template.name}")
+    return updated
+
+
+def run_case(name: str, digest_first: bool, java: str, jar: Path) -> str:
+    template = MODEL / f"{name}.cfg"
+    with tempfile.TemporaryDirectory(prefix=f"foldback-tlc-{name}-") as temporary:
+        work = Path(temporary)
+        spec = work / "SnapshotPublication.tla"
+        config = work / f"{name}.cfg"
+        shutil.copyfile(MODEL / "SnapshotPublication.tla", spec)
+        config.write_text(config_text(template, digest_first), encoding="utf-8")
+        command = [
+            java,
+            "-XX:+UseParallelGC",
+            "-XX:ActiveProcessorCount=1",
+            "-Xmx512m",
+            "-jar",
+            str(jar),
+            "-workers",
+            "1",
+            "-fp",
+            "0",
+            "-lncheck",
+            "final",
+            "-config",
+            str(config),
+            str(spec),
+        ]
+        result = subprocess.run(
+            command,
+            cwd=work,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+
+    output = result.stdout + result.stderr
+    if result.returncode == 0 and "No error has been found." in output:
+        states = re.search(r"(\d+) distinct states found", output)
+        count = f"; {states.group(1)} distinct states" if states else ""
+        print(f"PASS {name}{count}")
+        return "pass"
+    if "Error: Invariant VisibleManifestMatchesSidecar is violated." in output:
+        print(f"FAIL {name}: VisibleManifestMatchesSidecar is violated.")
+        print(output.rstrip())
+        return "fail"
+
+    print(f"ERROR {name}: TLC did not complete successfully.")
+    print(output.rstrip())
+    return "error"
+
+
+def main() -> int:
+    try:
+        digest_first = source_order()
+        java = java_binary()
+        jar = verified_tlc_jar()
+        outcomes = [
+            run_case(name, digest_first, java, jar)
+            for name in ("single", "separate", "shared")
+        ]
+    except (CheckError, OSError, subprocess.SubprocessError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+
+    print(
+        f"Summary: {outcomes.count('pass')} pass, "
+        f"{outcomes.count('fail')} invariant violation(s), "
+        f"{outcomes.count('error')} tool error(s)."
+    )
+    if "error" in outcomes:
+        return 2
+    return 1 if "fail" in outcomes else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
