@@ -104,6 +104,7 @@ tests =
   , ("concurrent same snapshot name", testConcurrentSameSnapshotName)
   , ("reject symlink traversal order independent", testRejectsSymlinkTraversalOrderIndependent)
   , ("reject incoherent directory trees", testRejectsIncoherentDirectoryTrees)
+  , ("validate deep paths and ancestor precedence", testDeepPaths)
   , ("reject trailing-slash snapshot paths", testRejectsTrailingSlashSnapshotPaths)
   , ("path validation scales subquadratically", testPathValidationScalesSubquadratically)
   , ("help", testHelp)
@@ -1450,6 +1451,28 @@ testRejectsSymlinkTraversalOrderIndependent = do
 
     verifyResult <- runExecutable ["verify", "--repo", repository]
     assertLeftContaining "verify rejects manifest where child precedes symlink" "path descends through a symlink: link/child" verifyResult
+
+testDeepPaths :: IO ()
+testDeepPaths = do
+  let dirs = take 80 (iterate (</> "a") "a")
+      parents = map Directory dirs
+      deep = foldl (</>) "a" (replicate 79 "a")
+      ancestor = deep </> "block"
+      child = ancestor </> "child"
+      digest = Digest (replicate 64 'a')
+      link = SymbolicLink ancestor "target"
+      file = RegularFile ancestor digest 1
+      descendant = Directory child
+      check expected entries = do
+        result <- try (validatePaths entries) :: IO (Either FoldbackError ())
+        assertEqual "deep ancestor error" (Left expected) result
+  validatePaths (parents <> [Directory (deep </> "valid")])
+  forM_ [[link, descendant], [descendant, link]] $ \entries ->
+    check (SnapshotPathThroughSymlink child) (parents <> entries)
+  forM_ [[file, descendant], [descendant, file]] $ \entries ->
+    check (SnapshotPathThroughRegularFile child) (parents <> entries)
+  check (SnapshotPathThroughSymlink child) (parents <> [descendant, file, link])
+  check (DuplicateSnapshotPath ancestor) (parents <> [file, link])
 
 testRejectsIncoherentDirectoryTrees :: IO ()
 testRejectsIncoherentDirectoryTrees = do
