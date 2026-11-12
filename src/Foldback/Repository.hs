@@ -235,49 +235,75 @@ loadCommittedSnapshot repository name = do
 -- Discovery plus a single load of every committed snapshot. The loader owns
 -- directory scanning (foreign artifacts and POSIX temp-file leftovers stay
 -- unlisted), so each manifest is opened, hashed, and validated exactly once
--- per run no matter which command needs it.
+-- per run no matter which command needs it. This returns every parsed
+-- snapshot at once; commands that walk the whole repository fold with
+-- 'foldCommittedSnapshots' instead so each manifest can be released after
+-- its turn.
 loadCommittedSnapshots :: Repository -> IO [(String, Snapshot)]
-loadCommittedSnapshots repository = do
-  names <- sort <$> (filterM shouldIncludeSnapshot =<< listDirectory (snapshotsDirectory repository))
-  traverse loadCommitted names
+loadCommittedSnapshots repository =
+  reverse <$> foldCommittedSnapshots repository (\loaded name snapshot -> pure ((name, snapshot) : loaded)) []
+
+-- Load committed snapshots one at a time in sorted name order, handing each
+-- to the step before the next manifest is read. The step must not keep the
+-- snapshot in its accumulator, or the fold retains every manifest again.
+foldCommittedSnapshots :: Repository -> (a -> String -> Snapshot -> IO a) -> a -> IO a
+foldCommittedSnapshots repository step initial = do
+  names <- committedSnapshotNames repository
+  foldM (\accumulator name -> step accumulator name =<< loadCommittedSnapshot repository name) initial names
+
+committedSnapshotNames :: Repository -> IO [String]
+committedSnapshotNames repository =
+  sort <$> (filterM shouldIncludeSnapshot =<< listDirectory (snapshotsDirectory repository))
  where
   shouldIncludeSnapshot name
     | not (isForeignArtifact name) = pure True
     | take 1 name == "." = pure False
     | otherwise = hasCommittedSnapshotEvidence repository name
 
-  loadCommitted name = do
-    snapshot <- loadCommittedSnapshot repository name
-    pure (name, snapshot)
-
 listSnapshots :: Repository -> IO [SnapshotInfo]
-listSnapshots repository = do
-  snapshots <- loadCommittedSnapshots repository
-  pure
-    [ SnapshotInfo
-        { infoName = name
-        , infoFileCount = snapshotFileCount snapshot
-        , infoTotalBytes = snapshotTotalBytes snapshot
-        }
-    | (name, snapshot) <- snapshots
-    ]
+listSnapshots repository =
+  reverse <$> foldCommittedSnapshots repository summarise []
+ where
+  -- Force the counts before the next load so a summary never holds a thunk
+  -- that keeps the snapshot's entries alive.
+  summarise summaries name snapshot = do
+    let fileCount' = snapshotFileCount snapshot
+        totalBytes' = snapshotTotalBytes snapshot
+    fileCount' `seq` totalBytes' `seq`
+      pure
+        ( SnapshotInfo
+            { infoName = name
+            , infoFileCount = fileCount'
+            , infoTotalBytes = totalBytes'
+            }
+            : summaries
+        )
 
 verifyRepository :: Repository -> IO Verification
 verifyRepository repository = do
-  snapshots <- map snd <$> loadCommittedSnapshots repository
+  -- Accumulate only the snapshot count and the sizes recorded for each
+  -- referenced object, so memory follows the unique object set rather than
+  -- the number of snapshots. Every manifest still loads before any object
+  -- is checked, keeping the existing failure order.
+  ReferenceTally snapshotCount expectedSizeSets <-
+    foldCommittedSnapshots repository tallySnapshot (ReferenceTally 0 Map.empty)
   objectNames <-
     sort . filter (not . isForeignArtifact) <$> listDirectory (objectsDirectory repository)
   mapM_ verifyObjectName objectNames
-  let expectedSizeSets = foldMap referencedObjects snapshots
   expectedObjects <- mapM uniqueExpectedSize (Map.toList expectedSizeSets)
   let objectNameSet = Set.fromList objectNames
   mapM_ (verifyReference objectNameSet) expectedObjects
   pure
     Verification
-      { verifiedSnapshots = length snapshots
+      { verifiedSnapshots = snapshotCount
       , verifiedObjects = length objectNames
       }
  where
+  -- unionWith, not the Map monoid: the monoid is a left-biased union and
+  -- would drop the sizes a later snapshot records for an object.
+  tallySnapshot (ReferenceTally count sizes) _ snapshot =
+    pure (ReferenceTally (count + 1) (Map.unionWith Set.union sizes (referencedObjects snapshot)))
+
   referencedObjects snapshot =
     Map.fromListWith Set.union
       [ (unDigest digest, Set.singleton size)
@@ -304,6 +330,8 @@ verifyRepository repository = do
     unless (name `Set.member` objectNameSet) (throwIO (MissingObject name))
     actualSize <- getFileSize (objectsDirectory repository </> name)
     unless (actualSize == expectedSize) (throwIO (WrongObjectSize name))
+
+data ReferenceTally = ReferenceTally !Int !(Map.Map String (Set.Set Integer))
 
 validateRepositoryPath :: FilePath -> IO ()
 validateRepositoryPath repository =

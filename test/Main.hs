@@ -15,13 +15,16 @@ import Foldback.Repository
   ( BackupReceipt (..)
   , Repository
   , Snapshot (..)
+  , Verification (..)
   , backup
   , createOrOpenRepository
+  , listSnapshots
   , loadCommittedSnapshots
   , manifestDigestPath
   , openRepository
   , snapshotDigest
   , validatePaths
+  , verifyRepository
   , writeManifestDigest
   , writeSnapshot
   )
@@ -71,6 +74,8 @@ tests =
   , ("backup and restore", testBackupAndRestore)
   , ("list and verify", testListAndVerify)
   , ("list and verify many snapshots", testListAndVerifyManySnapshots)
+  , ("list and verify residency ignores snapshot count", testListAndVerifyResidencyIgnoresSnapshotCount)
+  , ("verify cross-snapshot sizes and later manifests", testVerifyCrossSnapshotFailures)
   , ("detect corruption", testDetectsCorruption)
   , ("detect missing objects", testDetectsMissingObject)
   , ("detect wrong object sizes", testDetectsWrongObjectSize)
@@ -467,6 +472,115 @@ testListAndVerifyManySnapshots = withTemporaryDirectory "foldback-many-snapshots
   replaceFirst needle replacement content = case breakOnFirst needle content of
     Nothing -> error ("many-snapshot fixture could not find " <> show needle)
     Just (before, after) -> before <> replacement <> after
+
+-- Peak residency of the executable for one command, from GHC's RTS report.
+measureResidency :: [String] -> IO Int
+measureResidency arguments = do
+  (_, _, statistics) <- readProcessWithExitCode "foldback" (arguments <> ["+RTS", "-s"]) ""
+  case [line | line <- lines statistics, "maximum residency" `isInfixOf` line] of
+    (line : _) -> case words line of
+      (number : _) -> pure (read (filter (/= ',') number))
+      [] -> error ("no residency figure in RTS statistics: " <> line)
+    [] -> error ("the executable did not report RTS statistics; is -rtsopts enabled? output: " <> statistics)
+
+-- List and verify must release each manifest's entries once that snapshot is
+-- summarised or tallied. Snapshot size and the unique object set stay fixed,
+-- so peak residency must not follow the snapshot count.
+testListAndVerifyResidencyIgnoresSnapshotCount :: IO ()
+testListAndVerifyResidencyIgnoresSnapshotCount = withTemporaryDirectory "foldback-snapshot-residency-test" $ \sandbox -> do
+  let fewSnapshots = 4
+      manySnapshots = 32
+  few <- residencies (sandbox </> "few") fewSnapshots
+  many <- residencies (sandbox </> "many") manySnapshots
+  forM_
+    (zip3 ["list", "verify"] few many)
+    (\(command, small, large) ->
+      assertBool
+        ( command <> " peak residency grew from " <> show small <> " to " <> show large
+            <> " bytes for " <> show fewSnapshots <> " -> " <> show manySnapshots <> " snapshots"
+        )
+        (large * 2 < small * 3))
+ where
+  entryCount = 1000 :: Int
+  objectContents = ["object " <> show index | index <- [1 .. 8 :: Int]]
+
+  residencies repositoryPath snapshotCount = do
+    repository <- createOrOpenRepository repositoryPath
+    let objectDigests = map sha256Hex objectContents
+    forM_ (zip objectDigests objectContents) $ \(digest, content) ->
+      writeFile (repositoryPath </> "objects" </> digest) content
+    forM_ [1 .. snapshotCount :: Int] (writeFixture repositoryPath (cycle (zip objectDigests objectContents)))
+    infos <- listSnapshots repository
+    assertEqual "residency fixture lists every snapshot" snapshotCount (length infos)
+    verification <- verifyRepository repository
+    assertEqual "residency fixture verifies" (Verification snapshotCount (length objectContents)) verification
+    listResidency <- measureResidency ["list", "--repo", repositoryPath]
+    verifyResidency <- measureResidency ["verify", "--repo", repositoryPath]
+    pure [listResidency, verifyResidency]
+
+  writeFixture repositoryPath objectCycle number = do
+    let name = "s" <> show number
+        files =
+          [ RegularFile ("payload/file-" <> show index) (Digest digest) (fromIntegral (length content))
+          | (index, (digest, content)) <- zip [1 .. entryCount] objectCycle
+          ]
+        snapshot =
+          Snapshot
+            { snapshotFormat = 1
+            , snapshotName = name
+            , snapshotCreatedAt = 1
+            , snapshotEntries = Directory "." : Directory "payload" : files
+            , snapshotFileCount = entryCount
+            , snapshotTotalBytes = sum [size | RegularFile _ _ size <- files]
+            }
+        manifestPath = repositoryPath </> "snapshots" </> name
+    writeSnapshot manifestPath snapshot
+    writeManifestDigest manifestPath (snapshotDigest snapshot)
+
+-- Size conflicts only exist between snapshots, and a bad manifest late in
+-- name order must still fail list and verify before any object is checked.
+testVerifyCrossSnapshotFailures :: IO ()
+testVerifyCrossSnapshotFailures = withTemporaryDirectory "foldback-cross-snapshot-test" $ \sandbox -> do
+  let repositoryPath = sandbox </> "repository"
+      content = "shared"
+      digest = sha256Hex content
+  _ <- createOrOpenRepository repositoryPath
+  writeFile (repositoryPath </> "objects" </> digest) content
+  writeFixture repositoryPath "a" digest 6
+  writeFixture repositoryPath "b" digest 6
+
+  sharedVerify <- runExecutable ["verify", "--repo", repositoryPath]
+  assertEqual "snapshots sharing one object verify it once" (Right "verified 2 snapshots, 1 objects\n") sharedVerify
+  sharedList <- runExecutable ["list", "--repo", repositoryPath]
+  assertEqual "list keeps sorted snapshot order" (Right "a\t1 files\t6 bytes\nb\t1 files\t6 bytes\n") sharedList
+
+  writeFixture repositoryPath "c" digest 7
+  conflictVerify <- runExecutable ["verify", "--repo", repositoryPath]
+  assertLeftContaining "verify detects sizes that disagree across snapshots" ("object has conflicting sizes: " <> digest) conflictVerify
+
+  -- A corrupt object and a later corrupt manifest: manifest loading still
+  -- precedes object checks, so the manifest failure is reported first.
+  writeFile (repositoryPath </> "objects" </> digest) "tampered"
+  writeFixture repositoryPath "d" digest 6
+  appendFile (repositoryPath </> "snapshots" </> "d") " "
+  laterManifestVerify <- runExecutable ["verify", "--repo", repositoryPath]
+  assertLeftContaining "verify fails on an invalid later manifest first" "corrupt snapshot manifest: d" laterManifestVerify
+  laterManifestList <- runExecutable ["list", "--repo", repositoryPath]
+  assertLeftContaining "list fails on an invalid later manifest" "corrupt snapshot manifest: d" laterManifestList
+ where
+  writeFixture repositoryPath name digest size = do
+    let snapshot =
+          Snapshot
+            { snapshotFormat = 1
+            , snapshotName = name
+            , snapshotCreatedAt = 1
+            , snapshotEntries = [Directory ".", RegularFile "file" (Digest digest) size]
+            , snapshotFileCount = 1
+            , snapshotTotalBytes = size
+            }
+        manifestPath = repositoryPath </> "snapshots" </> name
+    writeSnapshot manifestPath snapshot
+    writeManifestDigest manifestPath (snapshotDigest snapshot)
 
 testDetectsCorruption :: IO ()
 testDetectsCorruption = withTemporaryDirectory "foldback-corruption-test" $ \sandbox -> do
@@ -1117,14 +1231,6 @@ testBoundsStreamingMemory = withTemporaryDirectory "foldback-memory-bound-test" 
         (command <> " peak residency " <> show residency <> " exceeds the " <> show bound <> " bound")
         (residency <= bound))
  where
-  measureResidency arguments = do
-    (_, _, statistics) <- readProcessWithExitCode "foldback" (arguments <> ["+RTS", "-s"]) ""
-    case [line | line <- lines statistics, "maximum residency" `isInfixOf` line] of
-      (line : _) -> case words line of
-        (number : _) -> pure (read (filter (/= ',') number))
-        [] -> error ("no residency figure in RTS statistics: " <> line)
-      [] -> error ("the executable did not report RTS statistics; is -rtsopts enabled? output: " <> statistics)
-
   writeFilledFile path size = withBinaryFile path WriteMode (fill chunk)
    where
     chunk = BS.replicate 1024 120
