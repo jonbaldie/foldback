@@ -1,5 +1,11 @@
 # Revision history for foldback
 
+## 0.1.10.0 -- 2026-11-22
+
+* Reduce memory use when listing and verifying repositories with many snapshots.
+* Detect conflicting recorded sizes for the same object across snapshots.
+* Reduce allocation when validating deeply nested snapshot paths.
+
 ## 0.1.9.0 -- 2026-11-05
 
 * Report typed repository errors without the `user error` wrapper in CLI output.
