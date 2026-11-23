@@ -24,6 +24,7 @@ library
       Foldback.Algebra
       Foldback.Error
       Foldback.Repository
+      Foldback.Staging
       Foldback.TreeScanner
   other-modules:
       Paths_foldback
