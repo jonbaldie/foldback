@@ -33,6 +33,7 @@ import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.Word (Word8)
 import Foldback.Algebra
 import Foldback.Error (FoldbackError (..))
+import Foldback.Staging (Staging (..), isStagingLeftover, withStagedFile)
 import Foldback.TreeScanner (scanSourceTree)
 import Numeric (showHex)
 import System.Directory
@@ -63,8 +64,6 @@ import System.IO
   ( Handle
   , IOMode (ReadMode)
   , SeekMode (AbsoluteSeek)
-  , hClose
-  , openBinaryTempFile
   , withBinaryFile
   )
 import System.IO.Error (isAlreadyExistsError, tryIOError)
@@ -341,17 +340,11 @@ writeFileIfMissing :: FilePath -> String -> IO ()
 writeFileIfMissing path content = do
   exists <- doesPathExist path
   unless exists $
-    bracket
-      (openBinaryTempFile (takeDirectory path) ".format-")
-      cleanupTemporaryFile
-      (\(temporaryPath, handle) -> do
-        ByteString.hPut handle (ByteString.pack (map (fromIntegral . fromEnum) content))
-        hClose handle
-        -- Backups can initialize one repository concurrently. Publish the
-        -- marker only after its complete contents are staged, so another
-        -- initializer never mistakes a partially written marker for a format.
-        renameFile temporaryPath path
-      )
+    withStagedBytes StagingFormat (takeDirectory path) (asciiBytes content) $ \temporaryPath ->
+      -- Backups can initialize one repository concurrently. Publish the
+      -- marker only after its complete contents are staged, so another
+      -- initializer never mistakes a partially written marker for a format.
+      renameFile temporaryPath path
 
 generatedSnapshotName :: IO String
 generatedSnapshotName = formatTime defaultTimeLocale "%Y%m%dT%H%M%S%qZ" <$> getCurrentTime
@@ -392,24 +385,11 @@ validateCreatedSnapshotName name = do
     (take 1 name `elem` ["-", "."])
     (throwIO SnapshotNameStartsWithDashOrDot)
 
--- Dotfiles and staging leftovers (".snapshot-", ".incoming-", ".digest-") in the live
--- directories are not repository artifacts; directory scans ignore them. On
--- POSIX, openBinaryTempFile puts the unique pid/counter before the template,
--- so those names arrive as e.g. "123-0.snapshot-" instead.
+-- Dotfiles and staging leftovers in the live directories are not repository
+-- artifacts; directory scans ignore them. Which names count as staging
+-- leftovers is decided by the staging seam that produces them.
 isForeignArtifact :: String -> Bool
-isForeignArtifact name = take 1 name == "." || isPosixTemporaryName name
-
-isPosixTemporaryName :: String -> Bool
-isPosixTemporaryName name =
-  case span isDigit name of
-    (pid, '-' : rest)
-      | not (null pid) ->
-          case span isDigit rest of
-            (counter, '.' : template)
-              | not (null counter) ->
-                  any (`isPrefixOf` template) ["incoming-", "snapshot-", "digest-"]
-            _ -> False
-    _ -> False
+isForeignArtifact name = take 1 name == "." || isStagingLeftover name
 
 hasCommittedSnapshotEvidence :: Repository -> String -> IO Bool
 hasCommittedSnapshotEvidence repository name = do
@@ -427,16 +407,12 @@ hasCommittedSnapshotEvidence repository name = do
         Left _ -> pure False
 
 storeObject :: Repository -> FilePath -> IO (Digest, Integer)
-storeObject repository source = do
-  let temporaryDirectory = objectsDirectory repository
-  bracket
-    (openBinaryTempFile temporaryDirectory ".incoming-")
-    cleanupTemporaryFile
-    (writeAndInstall temporaryDirectory)
+storeObject repository source =
+  withStagedFile StagingObject objectDirectory copyIn install
  where
-  writeAndInstall objectDirectory (temporaryPath, output) = do
-    (context, size) <- withBinaryFile source ReadMode (copyAndHash output SHA256.init 0)
-    hClose output
+  objectDirectory = objectsDirectory repository
+  copyIn output = withBinaryFile source ReadMode (copyAndHash output SHA256.init 0)
+  install temporaryPath (context, size) = do
     let digest = Digest (hexEncode (SHA256.finalize context))
         destination = objectDirectory </> unDigest digest
     destinationStatus <- tryIOError (Posix.getSymbolicLinkStatus destination)
@@ -485,45 +461,40 @@ hexEncode = concatMap hexByte . ByteString.unpack
     digits -> digits
 
 encodeSnapshot :: Snapshot -> ByteString.ByteString
-encodeSnapshot snapshot = ByteString.pack (map (fromIntegral . fromEnum) (show snapshot <> "\n"))
+encodeSnapshot snapshot = asciiBytes (show snapshot <> "\n")
 
 snapshotDigest :: Snapshot -> Digest
 snapshotDigest snapshot = Digest (hexEncode (SHA256.hash (encodeSnapshot snapshot)))
 
 writeSnapshot :: FilePath -> Snapshot -> IO ()
 writeSnapshot destination snapshot =
-  bracket
-    (openBinaryTempFile (takeDirectory destination) ".snapshot-")
-    cleanupTemporaryFile
-    (\(temporaryPath, handle) -> do
-      ByteString.hPut handle (encodeSnapshot snapshot)
-      hClose handle
-      linked <- tryIOError (Posix.createLink temporaryPath destination)
-      case linked of
-        Left err | isAlreadyExistsError err ->
-          throwIO (SnapshotAlreadyExists (snapshotName snapshot))
-        Left err -> ioError err
-        Right () -> removeFile temporaryPath
-    )
+  withStagedBytes StagingSnapshot (takeDirectory destination) (encodeSnapshot snapshot) $ \temporaryPath -> do
+    linked <- tryIOError (Posix.createLink temporaryPath destination)
+    case linked of
+      Left err | isAlreadyExistsError err ->
+        throwIO (SnapshotAlreadyExists (snapshotName snapshot))
+      Left err -> ioError err
+      Right () -> removeFile temporaryPath
 
 -- A manifest damaged in a well-formed way (e.g. a renamed entry path) passes
 -- every structural check, so its serialized bytes are digested at commit time
 -- and re-checked whenever the record is read back. The sidecar lives beside
 -- the record under a dot name, which directory scans ignore as a non-artifact.
--- The digest sidecar is staged into a temporary file (".digest-") and
+-- The digest sidecar is staged into a temporary file and
 -- atomically renamed before the snapshot manifest is published, guaranteeing
 -- crash resiliency: an interrupted backup leaves only artifacts that directory
 -- discovery recognizes as incomplete and excludes from listing or verification.
 writeManifestDigest :: FilePath -> Digest -> IO ()
 writeManifestDigest destination digest =
-  bracket
-    (openBinaryTempFile (takeDirectory destination) ".digest-")
-    cleanupTemporaryFile
-    (\(temporaryPath, handle) -> do
-      ByteString.hPut handle (ByteString.pack (map (fromIntegral . fromEnum) (unDigest digest <> "\n")))
-      hClose handle
-      renameFile temporaryPath (manifestDigestPath destination)
-    )
+  withStagedBytes StagingDigest (takeDirectory destination) (asciiBytes (unDigest digest <> "\n")) $ \temporaryPath ->
+    renameFile temporaryPath (manifestDigestPath destination)
+
+withStagedBytes :: Staging -> FilePath -> ByteString.ByteString -> (FilePath -> IO a) -> IO a
+withStagedBytes staging directory bytes publish =
+  withStagedFile staging directory (`ByteString.hPut` bytes) (\temporaryPath () -> publish temporaryPath)
+
+asciiBytes :: String -> ByteString.ByteString
+asciiBytes = ByteString.pack . map (fromIntegral . fromEnum)
 
 readStrictFile :: FilePath -> IO String
 readStrictFile path = decode <$> ByteString.readFile path
@@ -546,12 +517,6 @@ readManifestDigest manifestPath = do
  where
   sidecarPath = manifestDigestPath manifestPath
   takeName = reverse . takeWhile (/= '/') . reverse
-
-cleanupTemporaryFile :: (FilePath, Handle) -> IO ()
-cleanupTemporaryFile (path, handle) = do
-  void (tryIOError (hClose handle))
-  exists <- doesFileExist path
-  when exists (removeFile path)
 
 readSnapshot :: FilePath -> IO Snapshot
 readSnapshot path = do
