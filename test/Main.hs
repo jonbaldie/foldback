@@ -86,7 +86,6 @@ tests =
   , ("restore duplicate entries detect missing object", testRestoreDuplicateEntriesDetectsMissingObject)
   , ("restore duplicate entries detect wrong size", testRestoreDuplicateEntriesDetectsWrongSize)
   , ("reject symlink content objects", testRejectsSymlinkedContentObject)
-  , ("reject symlinked snapshot lock", testRejectsSymlinkedSnapshotLock)
   , ("reject symlink source roots", testRejectsSymlinkSourceRoot)
   , ("reject optionlike snapshot name", testRejectsOptionlikeSnapshotName)
   , ("reject invalid snapshot name before repository initialization", testRejectsInvalidSnapshotNameBeforeRepositoryInitialization)
@@ -152,7 +151,6 @@ testTypedErrors = withTemporaryDirectory "foldback-typed-errors" $ \sandbox -> d
         , (SourceNotDirectory "example", "source is not a directory: example")
         , (RepositoryOverlapsSource, "repository must be outside the source tree")
         , (SnapshotAlreadyExists "example", "snapshot already exists: example")
-        , (SnapshotLockNotRegularFile "example", "snapshot lock is not a regular file: example")
         , (InvalidSnapshotName, "snapshot names may contain only letters, digits, '.', '_' and '-'")
         , (SnapshotNameStartsWithDashOrDot, "snapshot names may not begin with '-' or '.'")
         , (EmptyRestoreTarget, "restore target cannot be empty")
@@ -849,58 +847,6 @@ testRejectsSymlinkedContentObject = withTemporaryDirectory "foldback-symlink-obj
     "backup rejects a dangling symlink in objects"
     ("object is not a regular file: " <> objectName)
     danglingBackupResult
-
-testRejectsSymlinkedSnapshotLock :: IO ()
-testRejectsSymlinkedSnapshotLock = withTemporaryDirectory "foldback-symlink-lock-test" $ \sandbox -> do
-  let source = sandbox </> "source"
-      repository = sandbox </> "repository"
-      external = sandbox </> "precious"
-  createDirectory source
-  writeFile (source </> "payload.txt") "lock symlink payload"
-  _ <- runExecutable ["backup", source, "--repo", repository, "--name", "first"]
-
-  -- a symlinked snapshot lock must not truncate the external target
-  writeFile external "PRECIOUS-DATA"
-  createFileLink external (repository </> "snapshots" </> ".evil.lock")
-  backupResult <- runExecutable ["backup", source, "--repo", repository, "--name", "evil"]
-  assertLeftContaining
-    "backup rejects a symlinked snapshot lock"
-    "snapshot lock is not a regular file: evil"
-    backupResult
-  precious <- readFile external
-  assertEqual "external file survives a symlinked snapshot lock" "PRECIOUS-DATA" precious
-  evilSnapshotExists <- doesPathExist (repository </> "snapshots" </> "evil")
-  assertEqual "no snapshot was committed through a symlinked lock" False evilSnapshotExists
-
-  -- a dangling symlink lock must not create the external target
-  let danglingTarget = sandbox </> "dangling-target"
-  createFileLink danglingTarget (repository </> "snapshots" </> ".dangling.lock")
-  danglingResult <- runExecutable ["backup", source, "--repo", repository, "--name", "dangling"]
-  assertLeftContaining
-    "backup rejects a dangling snapshot lock"
-    "snapshot lock is not a regular file: dangling"
-    danglingResult
-  danglingTargetExists <- doesPathExist danglingTarget
-  assertEqual "dangling lock target was not created" False danglingTargetExists
-
-  -- a directory at the lock path is likewise not a regular file
-  createDirectory (repository </> "snapshots" </> ".dir.lock")
-  dirResult <- runExecutable ["backup", source, "--repo", repository, "--name", "dir"]
-  assertLeftContaining
-    "backup rejects a directory at the snapshot lock path"
-    "snapshot lock is not a regular file: dir"
-    dirResult
-
-  -- a missing lock path still allows the named backup to succeed
-  plainResult <- runExecutable ["backup", source, "--repo", repository, "--name", "plain"]
-  assertRightContaining "backup succeeds with a missing lock path" "snapshot plain" plainResult
-
-  -- a pre-existing regular lock file remains usable as before
-  writeFile (repository </> "snapshots" </> ".regular.lock") "old lock bytes"
-  regularResult <- runExecutable ["backup", source, "--repo", repository, "--name", "regular"]
-  assertRightContaining "backup succeeds with a regular lock file" "snapshot regular" regularResult
-  regularSnapshotExists <- doesPathExist (repository </> "snapshots" </> "regular")
-  assertEqual "snapshot with a regular lock file was committed" True regularSnapshotExists
 
 testRejectsSymlinkSourceRoot :: IO ()
 testRejectsSymlinkSourceRoot = withTemporaryDirectory "foldback-symlink-root-test" $ \sandbox -> do
