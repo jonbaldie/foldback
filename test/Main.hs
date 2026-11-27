@@ -115,6 +115,7 @@ tests =
   , ("reject symlink traversal order independent", testRejectsSymlinkTraversalOrderIndependent)
   , ("reject incoherent directory trees", testRejectsIncoherentDirectoryTrees)
   , ("validate deep paths and ancestor precedence", testDeepPaths)
+  , ("reject interior-NUL snapshot paths", testRejectsInteriorNulSnapshotPaths)
   , ("reject trailing-slash snapshot paths", testRejectsTrailingSlashSnapshotPaths)
   , ("path validation scales subquadratically", testPathValidationScalesSubquadratically)
   , ("help", testHelp)
@@ -1872,6 +1873,118 @@ testRejectsIncoherentDirectoryTrees = do
 
     restoredExists3 <- doesPathExist restored
     assertBool "restore file-collision must fail upfront before creating target" (not restoredExists3)
+
+testRejectsInteriorNulSnapshotPaths :: IO ()
+testRejectsInteriorNulSnapshotPaths = do
+  let nulPath = "a" ++ [toEnum 0] ++ "b"
+      dummyDigest = Digest (replicate 64 'a')
+      assertRejected entry blamed = do
+        result <- try (validatePaths [entry]) :: IO (Either FoldbackError ())
+        assertEqual
+          "NUL in an entry path or symlink target is unsafe"
+          (Left (UnsafeSnapshotPath blamed))
+          result
+  assertRejected (Directory nulPath) nulPath
+  assertRejected (RegularFile nulPath dummyDigest 2) nulPath
+  assertRejected (SymbolicLink nulPath "ok") nulPath
+  assertRejected (SymbolicLink "lnk" nulPath) nulPath
+  -- Targets are not relative snapshot paths. Absolute targets and ".." stay
+  -- accepted; only a NUL in the target is refused.
+  validatePaths [SymbolicLink "lnk" "ok"]
+  validatePaths [SymbolicLink "lnk" "/abs"]
+  validatePaths [SymbolicLink "lnk" "../out"]
+
+  withTemporaryDirectory "foldback-nul-symlink-ok" $ \sandbox -> do
+    let source = sandbox </> "source"
+        repository = sandbox </> "repository"
+        restored = sandbox </> "restored"
+    createDirectory source
+    writeFile (source </> "f") "hi"
+    createFileLink "f" (source </> "lnk")
+    backupResult <- runExecutable ["backup", source, "--repo", repository, "--name", "base"]
+    assertRightContaining "backup of an ordinary symlink commits" "snapshot base:" backupResult
+    listResult <- runExecutable ["list", "--repo", repository]
+    assertRightContaining "list accepts an ordinary symlink snapshot" "base" listResult
+    verifyResult <- runExecutable ["verify", "--repo", repository]
+    assertRightContaining "verify accepts an ordinary symlink snapshot" "verified 1 snapshots" verifyResult
+    restoreResult <- runExecutable ["restore", "base", restored, "--repo", repository]
+    assertRightContaining "restore applies an ordinary symlink snapshot" "restored base" restoreResult
+    restoredTarget <- getSymbolicLinkTarget (restored </> "lnk")
+    assertEqual "restored ordinary symlink target" "f" restoredTarget
+
+  let content = "hi"
+      plantedDigest = Digest (sha256Hex content)
+      directorySnapshot =
+        Snapshot
+          { snapshotFormat = 1
+          , snapshotName = "nul-dir"
+          , snapshotCreatedAt = 1
+          , snapshotEntries = [Directory ".", Directory nulPath]
+          , snapshotFileCount = 0
+          , snapshotTotalBytes = 0
+          }
+      fileSnapshot =
+        Snapshot
+          { snapshotFormat = 1
+          , snapshotName = "nul-file"
+          , snapshotCreatedAt = 1
+          , snapshotEntries = [Directory ".", RegularFile nulPath plantedDigest 2]
+          , snapshotFileCount = 1
+          , snapshotTotalBytes = 2
+          }
+      linkSnapshot =
+        Snapshot
+          { snapshotFormat = 1
+          , snapshotName = "nul-link"
+          , snapshotCreatedAt = 1
+          , snapshotEntries = [Directory ".", SymbolicLink "lnk" nulPath]
+          , snapshotFileCount = 0
+          , snapshotTotalBytes = 0
+          }
+      linkPathSnapshot =
+        Snapshot
+          { snapshotFormat = 1
+          , snapshotName = "nul-link-path"
+          , snapshotCreatedAt = 1
+          , snapshotEntries = [Directory ".", SymbolicLink nulPath "ok"]
+          , snapshotFileCount = 0
+          , snapshotTotalBytes = 0
+          }
+  rejectCommittedNulSnapshot "directory entry path" directorySnapshot nulPath content
+  rejectCommittedNulSnapshot "regular-file entry path" fileSnapshot nulPath content
+  rejectCommittedNulSnapshot "symlink entry path" linkPathSnapshot nulPath content
+  rejectCommittedNulSnapshot "symlink target" linkSnapshot nulPath content
+
+rejectCommittedNulSnapshot :: String -> Snapshot -> String -> String -> IO ()
+rejectCommittedNulSnapshot label snapshot blamed content =
+  withTemporaryDirectory "foldback-nul-snapshot" $ \sandbox -> do
+    let source = sandbox </> "source"
+        repositoryPath = sandbox </> "repository"
+        restored = sandbox </> "restored"
+    createDirectory source
+    writeFile (source </> "f") content
+    planted <- runExecutable ["backup", source, "--repo", repositoryPath, "--name", "base"]
+    assertRightContaining (label <> " fixture backup") "snapshot base:" planted
+    let manifestPath = repositoryPath </> "snapshots" </> snapshotName snapshot
+    writeSnapshot manifestPath snapshot
+    writeManifestDigest manifestPath (snapshotDigest snapshot)
+
+    listResult <- runExecutable ["list", "--repo", repositoryPath]
+    expectUnsafeSnapshotPath (label <> " list") blamed listResult
+    verifyResult <- runExecutable ["verify", "--repo", repositoryPath]
+    expectUnsafeSnapshotPath (label <> " verify") blamed verifyResult
+    restoreResult <- runExecutable ["restore", snapshotName snapshot, restored, "--repo", repositoryPath]
+    expectUnsafeSnapshotPath (label <> " restore") blamed restoreResult
+    restoredExists <- doesPathExist restored
+    assertEqual (label <> " restore writes nothing") False restoredExists
+
+expectUnsafeSnapshotPath :: String -> String -> Either String a -> IO ()
+expectUnsafeSnapshotPath label blamed result = case result of
+  Left actual
+    | ("unsafe snapshot path: " <> blamed) `isInfixOf` actual
+    && not ("checkForInteriorNuls" `isInfixOf` actual) ->
+        pure ()
+  _ -> error (label <> "\nexpected unsafe snapshot path naming the NUL text")
 
 testRejectsTrailingSlashSnapshotPaths :: IO ()
 testRejectsTrailingSlashSnapshotPaths = do
