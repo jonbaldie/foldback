@@ -10,6 +10,7 @@ data FoldbackError
   | SourceNotDirectory FilePath
   | RepositoryOverlapsSource
   | SnapshotAlreadyExists String
+  | SnapshotLockNotRegularFile String
   | InvalidSnapshotName
   | SnapshotNameStartsWithDashOrDot
   | EmptyRestoreTarget
@@ -51,6 +52,7 @@ renderError problem = case problem of
   SourceNotDirectory p -> "source is not a directory: " <> p
   RepositoryOverlapsSource -> "repository must be outside the source tree"
   SnapshotAlreadyExists p -> "snapshot already exists: " <> p
+  SnapshotLockNotRegularFile p -> "snapshot lock is not a regular file: " <> p
   InvalidSnapshotName -> "snapshot names may contain only letters, digits, '.', '_' and '-'"
   SnapshotNameStartsWithDashOrDot -> "snapshot names may not begin with '-' or '.'"
   EmptyRestoreTarget -> "restore target cannot be empty"
