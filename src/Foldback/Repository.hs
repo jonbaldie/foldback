@@ -365,6 +365,16 @@ withSnapshotNameReservation snapshotPath name action =
  where
   lockPath = takeDirectory snapshotPath </> ("." <> name <> ".lock")
   acquireLock = do
+    -- createFile follows symlinks and truncates its target, so a planted
+    -- symlink at the lock path would destroy an external file. Require
+    -- absent-or-regular-file at the lock path first (the same lstat pattern
+    -- as symlinked content objects), leaving the external file untouched.
+    statusResult <- tryIOError (Posix.getSymbolicLinkStatus lockPath)
+    case statusResult of
+      Left _ -> pure ()
+      Right status
+        | Posix.isRegularFile status && not (Posix.isSymbolicLink status) -> pure ()
+        | otherwise -> throwIO (SnapshotLockNotRegularFile name)
     fd <- createFile lockPath 0o600
     locked <- tryIOError (setLock fd (WriteLock, AbsoluteSeek, 0, 0))
     case locked of
