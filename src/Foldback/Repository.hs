@@ -35,6 +35,8 @@ import Foldback.Algebra
 import Foldback.Error (FoldbackError (..))
 import Foldback.Staging (Staging (..), isStagingLeftover, withStagedFile)
 import Foldback.TreeScanner (scanSourceTree)
+import Foreign.C.Error (Errno (..), eNAMETOOLONG)
+import GHC.IO.Exception (IOException (ioe_errno))
 import Numeric (showHex)
 import System.Directory
   ( canonicalizePath
@@ -149,14 +151,9 @@ repositoryAt repositoryPath =
 
 backup :: FilePath -> Maybe String -> FilePath -> IO BackupReceipt
 backup repositoryPath requestedName unnormalisedSource = do
-  source <- validateBackupRequest repositoryPath requestedName unnormalisedSource
+  name <- maybe generatedSnapshotName pure requestedName
+  source <- validateBackupRequest repositoryPath name unnormalisedSource
   repository <- createOrOpenRepository repositoryPath
-  name <- case requestedName of
-    Just validName -> pure validName
-    Nothing -> do
-      generated <- generatedSnapshotName
-      validateCreatedSnapshotName generated
-      pure generated
   let snapshotPath = snapshotsDirectory repository </> name
   withSnapshotNameReservation snapshotPath name $ do
     collision <- doesPathExist snapshotPath
@@ -182,8 +179,8 @@ backup repositoryPath requestedName unnormalisedSource = do
         , receiptTotalBytes = totalBytes summary
         }
 
-validateBackupRequest :: FilePath -> Maybe String -> FilePath -> IO FilePath
-validateBackupRequest repositoryPath requestedName unnormalisedSource = do
+validateBackupRequest :: FilePath -> String -> FilePath -> IO FilePath
+validateBackupRequest repositoryPath name unnormalisedSource = do
   -- normalise "" is ".", so an empty source would silently snapshot the
   -- working directory; refuse it before any path handling.
   when (null unnormalisedSource) (throwIO EmptySource)
@@ -198,7 +195,7 @@ validateBackupRequest repositoryPath requestedName unnormalisedSource = do
   sourceStatus <- Posix.getSymbolicLinkStatus source
   when (Posix.isSymbolicLink sourceStatus) (throwIO (SourceNotDirectory source))
   ensureDisjoint RepositoryOverlapsSource source repositoryPath
-  maybe (pure ()) validateCreatedSnapshotName requestedName
+  validateCreatedSnapshotName repositoryPath name
   validateRepositoryPath repositoryPath
   pure source
 
@@ -390,12 +387,26 @@ withSnapshotNameReservation snapshotPath name action =
 -- the argument parser treats a leading dash as an option, so such a snapshot
 -- would be listed and verified but never restorable. Read paths keep accepting
 -- the looser charset so repositories from before this check stay navigable.
-validateCreatedSnapshotName :: String -> IO ()
-validateCreatedSnapshotName name = do
+validateCreatedSnapshotName :: FilePath -> String -> IO ()
+validateCreatedSnapshotName repositoryPath name = do
   validateSnapshotName name
   when
     (take 1 name `elem` ["-", "."])
     (throwIO SnapshotNameStartsWithDashOrDot)
+  -- Ask the destination filesystem itself: its component limit may count
+  -- characters rather than encoded bytes. lstat does not create an artifact.
+  directory <- existingAncestor (snapshotsDirectory (repositoryAt repositoryPath))
+  result <- tryIOError (Posix.getSymbolicLinkStatus (directory </> ("." <> name <> ".digest")))
+  case result of
+    Left problem | ioe_errno problem == Just (let Errno n = eNAMETOOLONG in n) -> throwIO SnapshotNameTooLong
+    Left problem | not (isDoesNotExistError problem) -> throwIO problem
+    _ -> pure ()
+ where
+  existingAncestor path = do
+    exists <- doesDirectoryExist path
+    if exists then pure path else do
+      let parent = takeDirectory path
+      if parent == path then pure path else existingAncestor parent
 
 -- Dotfiles and staging leftovers in the live directories are not repository
 -- artifacts; directory scans ignore them. Which names count as staging
