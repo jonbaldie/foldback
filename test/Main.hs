@@ -5,7 +5,7 @@ import Control.Exception (IOException, SomeException, bracket, displayException,
 import Control.Monad (forM_, unless, when)
 import qualified Crypto.Hash.SHA256 as SHA256
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (isInfixOf, isPrefixOf)
+import Data.List (isInfixOf, isPrefixOf, sort)
 import GHC.Clock (getMonotonicTime)
 import qualified Data.ByteString as BS
 import qualified Data.Set as Set
@@ -91,6 +91,7 @@ tests =
   , ("reject symlink source roots", testRejectsSymlinkSourceRoot)
   , ("reject optionlike snapshot name", testRejectsOptionlikeSnapshotName)
   , ("reject invalid snapshot name before repository initialization", testRejectsInvalidSnapshotNameBeforeRepositoryInitialization)
+  , ("reject overlong snapshot name before repository initialization", testRejectsOverlongSnapshotName)
   , ("reject optionlike repository value", testRejectsOptionlikeRepositoryValue)
   , ("reject optionlike name value", testRejectsOptionlikeNameValue)
   , ("reject symlink restore targets", testRejectsSymlinkRestoreTarget)
@@ -1014,6 +1015,28 @@ testRejectsInvalidSnapshotNameBeforeRepositoryInitialization =
       "an automatically named backup initializes its repository"
       True
       generatedRepositoryExists
+
+testRejectsOverlongSnapshotName :: IO ()
+testRejectsOverlongSnapshotName = withTemporaryDirectory "foldback-long-name" $ \sandbox -> do
+  let source = sandbox </> "source"
+      repository = sandbox </> "repository"
+  createDirectory source
+  result <- runExecutable ["backup", source, "--repo", repository, "--name", replicate 248 'a']
+  assertLeftContaining "overlong name is a validation error" "snapshot name is too long" result
+  exists <- doesPathExist repository
+  assertEqual "overlong name does not initialize repository" False exists
+  let fitting = replicate 247 'a'
+  accepted <- runExecutable ["backup", source, "--repo", repository, "--name", fitting]
+  assertRightContaining "boundary name commits" ("snapshot " <> fitting) accepted
+  beforeSnapshots <- listDirectory (repository </> "snapshots")
+  beforeObjects <- listDirectory (repository </> "objects")
+  writeFile (source </> "new-file") "new content"
+  rejected <- runExecutable ["backup", source, "--repo", repository, "--name", replicate 248 'a']
+  assertLeftContaining "existing repository rejects overlong name" "snapshot name is too long" rejected
+  afterSnapshots <- listDirectory (repository </> "snapshots")
+  afterObjects <- listDirectory (repository </> "objects")
+  assertEqual "no snapshot or lock added" (sort beforeSnapshots) (sort afterSnapshots)
+  assertEqual "no object added" (sort beforeObjects) (sort afterObjects)
 
 testRejectsOptionlikeRepositoryValue :: IO ()
 testRejectsOptionlikeRepositoryValue = withTemporaryDirectory "foldback-optionlike-repo-test" $ \sandbox -> do
