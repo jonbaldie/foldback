@@ -85,6 +85,7 @@ tests =
   , ("restore duplicate entries detect corrupt object", testRestoreDuplicateEntriesDetectsCorruptObject)
   , ("restore duplicate entries detect missing object", testRestoreDuplicateEntriesDetectsMissingObject)
   , ("restore duplicate entries detect wrong size", testRestoreDuplicateEntriesDetectsWrongSize)
+  , ("reject symlink metadata", testRejectsSymlinkedMetadata)
   , ("reject symlink content objects", testRejectsSymlinkedContentObject)
   , ("reject symlinked snapshot lock", testRejectsSymlinkedSnapshotLock)
   , ("reject symlink source roots", testRejectsSymlinkSourceRoot)
@@ -783,6 +784,38 @@ testRestoreDuplicateEntriesDetectsWrongSize = withTemporaryDirectory "foldback-r
   missingB <- doesPathExist (restored </> "b.txt")
   assertEqual "the mismatched entry is not restored" False missingB
 
+testRejectsSymlinkedMetadata :: IO ()
+testRejectsSymlinkedMetadata = forM_ ["manifest", "digest", "format"] $ \artifact ->
+  forM_ ["external", "internal", "dangling"] $ \linkKind ->
+    withTemporaryDirectory "foldback-symlink-metadata" $ \sandbox -> do
+      let source = sandbox </> "source"
+          repository = sandbox </> "repository"
+          target = sandbox </> "restored"
+          manifest = repository </> "snapshots" </> "first"
+          path = case artifact of
+            "manifest" -> manifest
+            "digest" -> manifestDigestPath manifest
+            _ -> repository </> "FORMAT"
+          copy = if linkKind == "internal" then repository </> "copy" else sandbox </> "copy"
+          message = case artifact of
+            "manifest" -> "snapshot manifest is not a regular file: first"
+            "digest" -> "snapshot digest is not a regular file: first"
+            _ -> "repository format marker is not a regular file"
+      createDirectory source
+      writeFile (source </> "payload") "payload"
+      initial <- runExecutable ["backup", source, "--repo", repository, "--name", "first"]
+      assertBool "fixture backup succeeds" (either (const False) (const True) initial)
+      renameFile path copy
+      when (linkKind == "dangling") (removeFile copy)
+      createFileLink copy path
+      let commands = [["verify", "--repo", repository], ["list", "--repo", repository], ["restore", "first", target, "--repo", repository]]
+          allCommands = if artifact == "format" then commands <> [["backup", source, "--repo", repository, "--name", "second"]] else commands
+      forM_ allCommands $ \args -> do
+        result <- runExecutable args
+        assertLeftContaining (artifact <> " " <> linkKind <> " " <> show args) message result
+      restored <- doesPathExist target
+      assertEqual "restore creates no target" False restored
+
 testRejectsSymlinkedContentObject :: IO ()
 testRejectsSymlinkedContentObject = withTemporaryDirectory "foldback-symlink-object-test" $ \sandbox -> do
   let source = sandbox </> "source"
@@ -1374,6 +1407,8 @@ testPosixTempFileLeftovers = withTemporaryDirectory "foldback-posix-temp-test" $
   objectTemp <- leaveStagingLeftover StagingObject (repository </> "objects")
   snapshotTemp <- leaveStagingLeftover StagingSnapshot (repository </> "snapshots")
   digestTemp <- leaveStagingLeftover StagingDigest (repository </> "snapshots")
+  createDirectory (repository </> "snapshots" </> "123-0.snapshot-")
+  createDirectory (repository </> "snapshots" </> ("123-0.snapshot-" <> replicate 240 'x'))
   assertBool "object temp file has the runtime POSIX shape" (not (isPrefixOf "." (takeFileName objectTemp)))
   assertBool "snapshot temp file has the runtime POSIX shape" (not (isPrefixOf "." (takeFileName snapshotTemp)))
   assertBool "digest temp file has the runtime POSIX shape" (not (isPrefixOf "." (takeFileName digestTemp)))
@@ -1431,6 +1466,22 @@ testRetainCommittedPosixShapedSnapshotNames = withTemporaryDirectory "foldback-p
 
   verifyResult <- runExecutable ["verify", "--repo", repository]
   assertEqual "committed POSIX-shaped snapshot remains verifiable" (Right "verified 1 snapshots, 1 objects\n") verifyResult
+  let sidecar = manifestDigestPath (repository </> "snapshots" </> snapshotName)
+  removeFile sidecar
+  createFileLink (sandbox </> "missing") sidecar
+  forM_ [["list", "--repo", repository], ["verify", "--repo", repository]] $ \args -> do
+    result <- runExecutable args
+    assertLeftContaining "dangling digest still identifies committed POSIX-shaped snapshot" ("snapshot digest is not a regular file: " <> snapshotName) result
+  let manifest = repository </> "snapshots" </> snapshotName
+  renameFile manifest (sandbox </> "manifest")
+  createFileLink (sandbox </> "manifest") manifest
+  forM_ [["list", "--repo", repository], ["verify", "--repo", repository]] $ \args -> do
+    result <- runExecutable args
+    assertLeftContaining "dangling digest makes symlinked POSIX-shaped manifest discoverable" ("snapshot manifest is not a regular file: " <> snapshotName) result
+  removeFile sidecar
+  forM_ [["list", "--repo", repository], ["verify", "--repo", repository]] $ \args -> do
+    result <- runExecutable args
+    assertLeftContaining "symlinked POSIX-shaped manifest without sidecar is rejected" ("snapshot manifest is not a regular file: " <> snapshotName) result
 
 testRejectsUnrelatedInvalidArtifacts :: IO ()
 testRejectsUnrelatedInvalidArtifacts = do

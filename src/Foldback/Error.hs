@@ -5,6 +5,7 @@ import Control.Exception (Exception (displayException))
 data FoldbackError
   = EmptyRepositoryPath
   | NotARepository FilePath
+  | RepositoryFormatNotRegularFile
   | UnsupportedRepositoryFormat
   | EmptySource
   | SourceNotDirectory FilePath
@@ -24,6 +25,8 @@ data FoldbackError
   | CorruptObject String
   | MissingObject String
   | WrongObjectSize String
+  | SnapshotManifestNotRegularFile String
+  | SnapshotDigestNotRegularFile String
   | MissingManifestDigest String
   | CorruptSnapshotManifest String
   | SnapshotDoesNotExist String
@@ -47,6 +50,7 @@ renderError :: FoldbackError -> String
 renderError problem = case problem of
   EmptyRepositoryPath -> "repository path cannot be empty"
   NotARepository p -> "not a foldback repository: " <> p
+  RepositoryFormatNotRegularFile -> "repository format marker is not a regular file"
   UnsupportedRepositoryFormat -> "unsupported repository format"
   EmptySource -> "source cannot be empty"
   SourceNotDirectory p -> "source is not a directory: " <> p
@@ -66,6 +70,8 @@ renderError problem = case problem of
   CorruptObject p -> "corrupt object: " <> p
   MissingObject p -> "missing object: " <> p
   WrongObjectSize p -> "wrong object size: " <> p
+  SnapshotManifestNotRegularFile p -> "snapshot manifest is not a regular file: " <> p
+  SnapshotDigestNotRegularFile p -> "snapshot digest is not a regular file: " <> p
   MissingManifestDigest p -> "corrupt snapshot manifest: no integrity digest for " <> p
   CorruptSnapshotManifest p -> "corrupt snapshot manifest: " <> p
   SnapshotDoesNotExist p -> "snapshot does not exist: " <> p
