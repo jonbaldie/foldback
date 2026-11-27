@@ -42,7 +42,6 @@ import System.Directory
   , createDirectory
   , createDirectoryIfMissing
   , doesDirectoryExist
-  , doesFileExist
   , doesPathExist
   , getFileSize
   , listDirectory
@@ -58,6 +57,7 @@ import System.FilePath
   , normalise
   , splitDirectories
   , takeDirectory
+  , takeFileName
   , (</>)
   )
 import System.IO
@@ -66,7 +66,7 @@ import System.IO
   , SeekMode (AbsoluteSeek)
   , withBinaryFile
   )
-import System.IO.Error (isAlreadyExistsError, tryIOError)
+import System.IO.Error (isAlreadyExistsError, isDoesNotExistError, tryIOError)
 import qualified System.Posix.Files as Posix
 import System.Posix.IO (LockRequest (WriteLock), closeFd, createFile, setLock)
 import Text.Read (readMaybe)
@@ -128,8 +128,7 @@ openRepositoryWithInitialization initialize repositoryPath = do
     createDirectoryIfMissing True (objectsDirectory repository)
     createDirectoryIfMissing True (snapshotsDirectory repository)
     writeFileIfMissing (formatPath repository) repositoryFormat
-  formatExists <- doesFileExist (formatPath repository)
-  unless formatExists (throwIO (NotARepository repositoryPath))
+  requireRegularFile (formatPath repository) (NotARepository repositoryPath) RepositoryFormatNotRegularFile
   format <- readStrictFile (formatPath repository)
   unless (format == repositoryFormat) (throwIO UnsupportedRepositoryFormat)
   -- Repository operations list these directories directly, so a handle must
@@ -251,13 +250,14 @@ foldCommittedSnapshots repository step initial = do
   foldM (\accumulator name -> step accumulator name =<< loadCommittedSnapshot repository name) initial names
 
 committedSnapshotNames :: Repository -> IO [String]
-committedSnapshotNames repository =
-  sort <$> (filterM shouldIncludeSnapshot =<< listDirectory (snapshotsDirectory repository))
- where
-  shouldIncludeSnapshot name
-    | not (isForeignArtifact name) = pure True
-    | take 1 name == "." = pure False
-    | otherwise = hasCommittedSnapshotEvidence repository name
+committedSnapshotNames repository = do
+  entries <- listDirectory (snapshotsDirectory repository)
+  let entrySet = Set.fromList entries
+      shouldIncludeSnapshot name
+        | not (isForeignArtifact name) = pure True
+        | take 1 name == "." = pure False
+        | otherwise = hasCommittedSnapshotEvidence repository entrySet name
+  sort <$> filterM shouldIncludeSnapshot entries
 
 listSnapshots :: Repository -> IO [SnapshotInfo]
 listSnapshots repository =
@@ -338,9 +338,11 @@ validateRepositoryPath repository =
 
 writeFileIfMissing :: FilePath -> String -> IO ()
 writeFileIfMissing path content = do
-  exists <- doesPathExist path
-  unless exists $
-    withStagedBytes StagingFormat (takeDirectory path) (asciiBytes content) $ \temporaryPath ->
+  status <- nodeStatus path
+  case status of
+    Just fileStatus | not (Posix.isRegularFile fileStatus) -> throwIO RepositoryFormatNotRegularFile
+    Just _ -> pure ()
+    Nothing -> withStagedBytes StagingFormat (takeDirectory path) (asciiBytes content) $ \temporaryPath ->
       -- Backups can initialize one repository concurrently. Publish the
       -- marker only after its complete contents are staged, so another
       -- initializer never mistakes a partially written marker for a format.
@@ -401,20 +403,25 @@ validateCreatedSnapshotName name = do
 isForeignArtifact :: String -> Bool
 isForeignArtifact name = take 1 name == "." || isStagingLeftover name
 
-hasCommittedSnapshotEvidence :: Repository -> String -> IO Bool
-hasCommittedSnapshotEvidence repository name = do
+hasCommittedSnapshotEvidence :: Repository -> Set.Set String -> String -> IO Bool
+hasCommittedSnapshotEvidence repository entries name = do
   let manifestPath = snapshotsDirectory repository </> name
-  sidecarExists <- doesFileExist (manifestDigestPath manifestPath)
+      sidecarExists = takeFileName (manifestDigestPath manifestPath) `Set.member` entries
   if sidecarExists
     then pure True
     else do
-      parsed <- try (try (readSnapshot manifestPath)) :: IO (Either IOException (Either FoldbackError Snapshot))
-      case parsed of
-        Right (Right snapshot) -> pure (snapshotName snapshot == name)
-        Right (Left (SnapshotDoesNotExist _)) -> pure False
-        Right (Left (InvalidSnapshot _)) -> pure False
-        Right (Left problem) -> throwIO problem
-        Left _ -> pure False
+      status <- nodeStatus manifestPath
+      case status of
+        Just fileStatus | Posix.isSymbolicLink fileStatus -> pure True
+        Just fileStatus | Posix.isRegularFile fileStatus -> do
+          parsed <- try (try (readSnapshot manifestPath)) :: IO (Either IOException (Either FoldbackError Snapshot))
+          case parsed of
+            Right (Right snapshot) -> pure (snapshotName snapshot == name)
+            Right (Left (SnapshotDoesNotExist _)) -> pure False
+            Right (Left (InvalidSnapshot _)) -> pure False
+            Right (Left problem) -> throwIO problem
+            Left _ -> pure False
+        _ -> pure False
 
 storeObject :: Repository -> FilePath -> IO (Digest, Integer)
 storeObject repository source =
@@ -516,22 +523,38 @@ manifestDigestPath manifestPath = takeDirectory manifestPath </> ("." <> takeNam
  where
   takeName = reverse . takeWhile (/= '/') . reverse
 
+-- lstat distinguishes missing nodes from dangling links and never follows the
+-- final component. Other IO errors must not be mistaken for absence.
+nodeStatus :: FilePath -> IO (Maybe Posix.FileStatus)
+nodeStatus path = do
+  result <- tryIOError (Posix.getSymbolicLinkStatus path)
+  case result of
+    Left err | isDoesNotExistError err -> pure Nothing
+    Left err -> ioError err
+    Right status -> pure (Just status)
+
+requireRegularFile :: FilePath -> FoldbackError -> FoldbackError -> IO ()
+requireRegularFile path missing invalid = do
+  status <- nodeStatus path
+  case status of
+    Nothing -> throwIO missing
+    Just fileStatus -> unless (Posix.isRegularFile fileStatus) (throwIO invalid)
+
 readManifestDigest :: FilePath -> IO Digest
 readManifestDigest manifestPath = do
-  exists <- doesFileExist sidecarPath
-  unless exists (throwIO (MissingManifestDigest (takeName manifestPath)))
+  requireRegularFile sidecarPath (MissingManifestDigest name) (SnapshotDigestNotRegularFile name)
   content <- readStrictFile sidecarPath
   let digest = takeWhile (/= '\n') content
   unless (validDigest digest) (throwIO (CorruptSnapshotManifest (takeName manifestPath)))
   pure (Digest digest)
  where
   sidecarPath = manifestDigestPath manifestPath
+  name = takeName manifestPath
   takeName = reverse . takeWhile (/= '/') . reverse
 
 readSnapshot :: FilePath -> IO Snapshot
 readSnapshot path = do
-  exists <- doesFileExist path
-  unless exists (throwIO (SnapshotDoesNotExist (takeName path)))
+  requireRegularFile path (SnapshotDoesNotExist (takeName path)) (SnapshotManifestNotRegularFile (takeName path))
   content <- readStrictFile path
   case readMaybe content of
     Nothing -> throwIO (InvalidSnapshot path)
