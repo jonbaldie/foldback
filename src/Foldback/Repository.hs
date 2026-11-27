@@ -611,6 +611,7 @@ validatePaths manifestEntries = void (foldM validate (Set.empty, Set.singleton "
     let path = entryPath entry
         parent = takeDirectory path
     unless (safeRelativePath path) (throwIO (UnsafeSnapshotPath path))
+    rejectNulSymlinkTarget entry
     when (Set.member path seen) (throwIO (DuplicateSnapshotPath path))
     when (hasIndexedPrefix path symlinks) (throwIO (SnapshotPathThroughSymlink path))
     when (hasIndexedPrefix path regularFiles) (throwIO (SnapshotPathThroughRegularFile path))
@@ -629,10 +630,23 @@ safeRelativePath :: FilePath -> Bool
 safeRelativePath path =
   path /= "."
     && not (null path)
+    && not (containsNul path)
     && not (isPathSeparator (last path))
     && not (isAbsolute path)
     && normalise path == path
     && all (\part -> part /= ".." && part /= ".") (splitDirectories path)
+
+-- A NUL byte cannot occur in a POSIX pathname. Backup never produces one, and
+-- restore cannot apply one, so a committed snapshot that contains one is unsafe.
+containsNul :: String -> Bool
+containsNul = elem '\NUL'
+
+-- Link text is not a snapshot path: absolute targets and ".." are stored as
+-- written. A NUL still cannot be applied, and the error names the target.
+rejectNulSymlinkTarget :: ManifestEntry -> IO ()
+rejectNulSymlinkTarget (SymbolicLink _ linkTarget)
+  | containsNul linkTarget = throwIO (UnsafeSnapshotPath linkTarget)
+rejectNulSymlinkTarget _ = pure ()
 
 isPathPrefixOf :: FilePath -> FilePath -> Bool
 isPathPrefixOf parent child = addTrailingPathSeparator parent `isPrefixOf` child

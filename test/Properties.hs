@@ -256,7 +256,9 @@ genPiece budget index = do
       digest <- vectorOf 64 (elements ("0123456789abcdef" :: String))
       pure (PFile name size digest, index + 1)
     _ -> do
-      target <- resize 8 arbitrary
+      -- Coherent snapshots are restorable. A NUL target is not a POSIX
+      -- pathname and snapshot validation rejects it, so it is not generated.
+      target <- resize 8 (listOf (arbitrary `suchThat` (/= toEnum 0)))
       pure (PLink name target, index + 1)
 
 flattenPieceTree :: Piece -> Gen [ManifestEntry]
